@@ -39,11 +39,18 @@ REFUSED = {
 }
 
 INTERVAL_UNITS = {
-    "second": "seconds", "seconds": "seconds", "sec": "seconds",
-    "minute": "minutes", "minutes": "minutes", "min": "minutes",
-    "hour": "hours", "hours": "hours",
-    "day": "days", "days": "days",
-    "week": "weeks", "weeks": "weeks",
+    "second": "seconds",
+    "seconds": "seconds",
+    "sec": "seconds",
+    "minute": "minutes",
+    "minutes": "minutes",
+    "min": "minutes",
+    "hour": "hours",
+    "hours": "hours",
+    "day": "days",
+    "days": "days",
+    "week": "weeks",
+    "weeks": "weeks",
 }
 
 
@@ -162,8 +169,13 @@ def _choose_step(start: datetime, end: datetime, requested: str | None) -> str:
     return f"{step}s"
 
 
-def plan(sql: str, dialect: str = "mysql", step: str | None = None,
-         default_window: timedelta = DEFAULT_WINDOW, mode: str = "raw") -> QuerySpec:
+def plan(
+    sql: str,
+    dialect: str = "mysql",
+    step: str | None = None,
+    default_window: timedelta = DEFAULT_WINDOW,
+    mode: str = "raw",
+) -> QuerySpec:
     statement = sqlglot.parse_one(sql, read=dialect)
     if not isinstance(statement, exp.Select):
         raise UnsupportedSQL("Only SELECT statements are supported.")
@@ -292,8 +304,6 @@ def _translate_predicate(node: exp.Expression) -> tuple[str, object]:
         return "matcher", Matcher(matcher.label, NOT_MATCHES, matcher.value)
 
     if isinstance(node, exp.Or):
-        raise UnsupportedSQL(
-            "OR is not supported. Use IN (...) for alternatives on one label."
-        )
+        raise UnsupportedSQL("OR is not supported. Use IN (...) for alternatives on one label.")
 
     raise UnsupportedSQL(f"Unsupported WHERE clause: {node.sql()}")

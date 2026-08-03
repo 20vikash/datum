@@ -46,9 +46,12 @@ class QuerySpec:
     def selector(self) -> str:
         if not self.matchers:
             return self.metric
-        inner = ", ".join(matcher.render() for matcher in sorted(
-            self.matchers, key=lambda m: (m.label, m.operator, m.value)
-        ))
+
+        inner = ", ".join(
+            matcher.render()
+            for matcher in sorted(self.matchers, key=lambda m: (m.label, m.operator, m.value))
+        )
+
         return f"{self.metric}{{{inner}}}"
 
     def describe(self) -> dict:

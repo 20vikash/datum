@@ -1,18 +1,27 @@
-"""Query a Prometheus-compatible metrics store with SQL.
+"""Translate a narrow dialect of SQL into PromQL.
 
-    from datum_sql import connect
+    from datum_sql import plan, shape
 
-    db = connect("http://localhost:8428")
-    db.tables()
-    db.sql("SELECT * FROM system_cpu_percent WHERE ts > now() - INTERVAL 1 HOUR")
+    spec = plan("SELECT * FROM system_cpu_percent WHERE ts > now() - INTERVAL 1 HOUR")
+    spec.selector
+    result = shape(rows_you_fetched, spec)
 
 One SELECT becomes one PromQL range query. Joins, GROUP BY and aggregates are
-refused rather than silently mistranslated.
+refused rather than silently mistranslated. Fetching is the caller's job; this
+package opens no sockets.
 """
 
-from .connection import Connection, Result, connect
 from .planner import plan
+from .rows import Result, infer_columns, shape
 from .spec import Matcher, QuerySpec, UnsupportedSQL
 
-__all__ = ["Connection", "Matcher", "QuerySpec", "Result", "UnsupportedSQL", "connect", "plan"]
+__all__ = [
+    "Matcher",
+    "QuerySpec",
+    "Result",
+    "UnsupportedSQL",
+    "infer_columns",
+    "plan",
+    "shape",
+]
 __version__ = "0.1.0"

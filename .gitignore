@@ -7,3 +7,20 @@ __pycache__/
 dist/
 build/
 .DS_Store
+
+# coverage
+.coverage
+.coverage.*
+htmlcov/
+
+# secrets and local settings; DATUM_URL and DATUM_TOKEN live here
+.env
+.env.*
+
+# VictoriaMetrics data, when the server is run from inside the repo
+victoriametrics-data/
+*.vm-data/
+
+# editors
+.idea/
+.vscode/

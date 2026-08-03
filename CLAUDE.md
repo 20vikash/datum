@@ -21,22 +21,24 @@ stores them, and consumers read them back over SQL or PromQL.
 
 ## What Exists Today
 
-- `datum_sql/` — SQL to PromQL translator. Complete and tested.
+- `datum_sql/` — SQL to PromQL translator. Pure: it opens no sockets.
   - `spec.py` — `QuerySpec`, `Matcher`, `UnsupportedSQL`
   - `planner.py` — SQL to `QuerySpec`; `_translate_predicate` is where every WHERE branch is decided
-  - `client.py` — VictoriaMetrics HTTP: catalog and fetch
-  - `connection.py` — `connect()`, `sql()`, `explain()`
-- `tests/test_planner.py` — translation, no network
-- `tests/live_check.py` — end to end against a real server
+  - `rows.py` — `shape()`, `Result`; projection, ORDER BY and LIMIT over rows the caller fetched
+- `datum/` — the service.
+  - `config.py` — `Settings.from_env()`
+  - `api/` — `create_app()` and the routers it includes
+- `tests/test_planner.py` — translation
+- `tests/test_rows.py` — row shaping
+- `tests/test_api.py` — the app boots and serves `/health`
 
 ## Planned Layout
 
 Add these as siblings, never inside `datum_sql`:
 
-- `datum/api/` — ingest and query endpoints
+- `datum/storage/` — the VictoriaMetrics client the service uses; all fetching lives here
 - `datum/auth/` — token verification; Central mints, Datum checks a hash
 - `datum/beacon/` — rule evaluation and alert delivery
-- `datum/storage/` — the VictoriaMetrics client the service uses
 
 ## Shape
 
