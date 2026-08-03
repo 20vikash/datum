@@ -16,7 +16,7 @@ htmlcov/
 # secrets and local settings; DATUM_URL and DATUM_TOKENS live here
 .env
 .env.*
-!.env.example
+.env.example
 
 # VictoriaMetrics data, when the server is run from inside the repo
 victoriametrics-data/

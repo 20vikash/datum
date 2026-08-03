@@ -13,7 +13,7 @@ from datetime import UTC, datetime, timedelta
 import sqlglot
 from sqlglot import expressions as exp
 
-from .spec import (
+from datum_sql.spec import (
     EQUAL,
     MATCHES,
     NOT_EQUAL,

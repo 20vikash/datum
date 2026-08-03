@@ -1,13 +1,8 @@
-"""What a QuerySpec asks for that PromQL cannot do: projection, ORDER BY, LIMIT.
-
-Pure. You fetch the rows however you like and hand them here.
-"""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .spec import QuerySpec
+from datum_sql.spec import QuerySpec
 
 MAX_ROWS = 500_000
 
@@ -37,7 +32,10 @@ class Result:
 
 
 def shape(rows: list[dict], spec: QuerySpec, max_rows: int = MAX_ROWS) -> Result:
-    """Apply the parts of `spec` a PromQL selector cannot express."""
+    """Apply the parts of `spec` a PromQL selector cannot: projection, ORDER BY, LIMIT.
+
+    Pure. You fetch the rows however you like and hand them here.
+    """
     truncated = len(rows) > max_rows
     if truncated:
         rows = rows[:max_rows]

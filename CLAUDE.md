@@ -5,8 +5,14 @@ stores them, and consumers read them back over SQL or PromQL.
 
 ## Main Rules
 
-- **VictoriaMetrics is the only storage engine.** Do not add a second one, and do not add an
-  abstraction layer whose only purpose is to allow one.
+- **VictoriaMetrics is the only storage engine that ships.** There is one escape hatch and it is
+  narrow: `MetricProvider` in `datum/api/internals/providers/base.py`. Supporting another store
+  means writing a provider and registering it — never widening the interface, never branching on
+  the backend anywhere else in the service. If a change needs to know which provider is in use
+  outside `providers/`, it is the wrong change.
+- **A provider stores and retrieves. It does not query.** Selector translation lives in
+  `datum_sql`, row shaping in `datum_sql.shape()`. A provider that starts interpreting SQL is a
+  second query engine, which is what the seam exists to prevent.
 - **There is no queue.** Producers POST to the API, the API writes to VictoriaMetrics. Do not
   reintroduce Redis, a consumer process, or a spool file.
 - **Numbers only.** Datum stores metrics. Slow queries, request traces, and anything with free
@@ -26,31 +32,38 @@ stores them, and consumers read them back over SQL or PromQL.
   - `planner.py` — SQL to `QuerySpec`; `_translate_predicate` is where every WHERE branch is decided
   - `rows.py` — `shape()`, `Result`; projection, ORDER BY and LIMIT over rows the caller fetched
 - `datum/` — the service.
-  - `config.py` — `Settings.from_env()`
-  - `api/` — `create_app()` and the routers it includes
-- `tests/test_planner.py` — translation
-- `tests/test_rows.py` — row shaping
-- `tests/test_api.py` — the app boots and serves `/health`
+  - `config.py` — `Settings.from_env()`; `DATUM_BACKEND` picks the provider
+  - `api/app.py` — `create_app(settings, tokens)`; builds the provider once, at startup
+  - `api/dependencies.py` — `Store`, `Caller`
+  - `api/errors.py` — validation failures that survive being serialised
+  - `api/routes/v1/` — thin routes; auth is attached to the whole `/v1` mount
+  - `api/internals/schemas.py` — the published wire contract
+  - `api/internals/auth.py` — `Identity` (and what it stamps), `TokenStore`, `LabelConflict`
+  - `api/internals/store.py` — `MetricStore`, the facade routes call
+  - `api/internals/providers/` — `MetricProvider`, the registry, `VictoriaMetricsProvider`
+- `tests/conftest.py` — authenticated and anonymous clients
+- `tests/test_planner.py`, `test_rows.py` — translation and row shaping
+- `tests/test_api.py`, `test_ingest_contract.py`, `test_auth.py`, `test_providers.py`
+
+Every provider method is still unwritten. Four endpoints answer 501 until they land.
 
 ## Planned Layout
 
-Add these as siblings, never inside `datum_sql`:
-
-- `datum/storage/` — the VictoriaMetrics client the service uses; all fetching lives here
-- `datum/auth/` — token verification; Central mints, Datum checks a hash
-- `datum/beacon/` — rule evaluation and alert delivery
+- `datum/beacon/` — rule evaluation and alert delivery. A second process, and it needs a provider
+  too, so anything it shares with the API belongs beside the provider rather than inside `api/`.
 
 ## Shape
 
 ```
-producers ──POST /v1/ingest──▶ datum-api ──▶ VictoriaMetrics
-                                                   ▲
-                              datum-beacon ────────┤ evaluates rules
-                                                   │
+producers ──POST /v1/ingest──▶ datum-api ──▶ MetricProvider ──▶ VictoriaMetrics
+                                                   ▲                    ▲
+                              datum-beacon ────────┤ evaluates rules    │ the only
+                                                   │                    │ one shipped
                               Insights ────────────┘ via datum_sql
 ```
 
-Two processes: `datum-api` and `datum-beacon`. Nothing between the API and storage.
+Two processes: `datum-api` and `datum-beacon`. Nothing between the API and storage but the
+provider, which is one indirection and holds no logic of its own.
 
 ## Design Expectations
 
@@ -59,7 +72,13 @@ Two processes: `datum-api` and `datum-beacon`. Nothing between the API and stora
 - Push down what reduces bytes fetched: metric name, time window, label matchers. Everything else
   is the caller's problem, deliberately.
 - Every query gets a time window. Unbounded means one hour, never all of retention.
-- Identity comes from the token, never the request body.
+- Identity comes from the token, never the request body. Token labels are enforced, not merged: a
+  body claiming a label its token already fixes is a 400.
+- Auth attaches to the `/v1` mount, not to individual routes, so a new route is authenticated by
+  default. It resolves before validation, so a stranger sending nonsense gets 401 and learns
+  nothing about the schema.
+- A second storage engine is a new file in `providers/` and one `register()` call. If it needs
+  anything else, the seam is wrong and that is the bug to fix.
 
 ## Facts That Constrain Design
 
