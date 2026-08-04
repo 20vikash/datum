@@ -7,7 +7,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from datum.api.internals import Identity, MetricStore
 
-bearer = HTTPBearer(auto_error=False, description="Token minted by Central.")
+bearer = HTTPBearer(auto_error=False, description="JWT minted by Central.")
 
 
 def get_store(request: Request) -> MetricStore:
@@ -19,7 +19,12 @@ def get_identity(
     request: Request,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)],
 ) -> Identity:
-    """Resolve the bearer token to who is calling. Identity never comes from the body."""
+    """Resolve the bearer token to who is calling.
+
+    Attached to the whole /v1 mount, so it gates every route. Nothing reads the
+    Identity it returns yet -- when reads become tenant-scoped, the claim's
+    labels are what will scope them.
+    """
     identity = credentials and request.app.state.tokens.resolve(credentials.credentials)
     if not identity:
         raise HTTPException(
@@ -31,4 +36,3 @@ def get_identity(
 
 
 Store = Annotated[MetricStore, Depends(get_store)]
-Caller = Annotated[Identity, Depends(get_identity)]

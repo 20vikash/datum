@@ -1,20 +1,21 @@
 # Agent Guide
 
-Datum is the telemetry service for the Frappe fleet. Producers push numbers, VictoriaMetrics
-stores them, and consumers read them back over SQL or PromQL.
+Datum is the telemetry service for the Frappe fleet. Producers push numbers through vmauth,
+VictoriaMetrics stores them, and consumers read them back over SQL.
 
 ## Main Rules
 
 - **VictoriaMetrics is the only storage engine that ships.** There is one escape hatch and it is
   narrow: `MetricProvider` in `datum/api/internals/providers/base.py`. Supporting another store
-  means writing a provider and registering it — never widening the interface, never branching on
-  the backend anywhere else in the service. If a change needs to know which provider is in use
-  outside `providers/`, it is the wrong change.
-- **A provider stores and retrieves. It does not query.** Selector translation lives in
+  means writing a provider and pointing `app.py` at it — never widening the interface, never
+  branching on the backend anywhere else in the service. There is no registry and no
+  `DATUM_BACKEND`: selecting between engines was cost with no buyer.
+- **A provider retrieves. It does not query, and it does not write.** Selector translation lives in
   `datum_sql`, row shaping in `datum_sql.shape()`. A provider that starts interpreting SQL is a
   second query engine, which is what the seam exists to prevent.
-- **There is no queue.** Producers POST to the API, the API writes to VictoriaMetrics. Do not
-  reintroduce Redis, a consumer process, or a spool file.
+- **There is no queue, and no write path in Python.** Producers POST to vmauth, which verifies
+  the JWT and proxies to VictoriaMetrics. Do not reintroduce Redis, a consumer process, a spool
+  file, or an ingest route on the API.
 - **Numbers only.** Datum stores metrics. Slow queries, request traces, and anything with free
   text belong somewhere else.
 - **`datum_sql` is a standalone package.** It must never import from the service, and must stay
@@ -32,20 +33,35 @@ stores them, and consumers read them back over SQL or PromQL.
   - `planner.py` — SQL to `QuerySpec`; `_translate_predicate` is where every WHERE branch is decided
   - `rows.py` — `shape()`, `Result`; projection, ORDER BY and LIMIT over rows the caller fetched
 - `datum/` — the service.
-  - `config.py` — `Settings.from_env()`; `DATUM_BACKEND` picks the provider
+  - `config/` — every default and every generated file lives here, nothing hardcoded elsewhere
+    - `api.py` — `Settings.from_env()`; the store URL, read from the unit's `Environment=`
+    - `victoria.py` — retention, memory, the cardinality limiter
+    - `units.py` — the systemd units, and where the API listens
+    - `paths.py` — where generated files and logs go
+    - `vmauth.py` — `VmauthSettings` and the generated `-auth.config`
   - `api/app.py` — `create_app(settings, tokens)`; builds the provider once, at startup
-  - `api/dependencies.py` — `Store`, `Caller`
+  - `api/dependencies.py` — `Store`, and `get_identity`, the gate on the `/v1` mount
   - `api/errors.py` — validation failures that survive being serialised
-  - `api/routes/v1/` — thin routes; auth is attached to the whole `/v1` mount
+  - `api/routes/` — thin routes, reads only; `/v1` and the auth gate are attached in one
+    `include_router` call, so a new route is versioned and authenticated without saying so
   - `api/internals/schemas.py` — the published wire contract
-  - `api/internals/auth.py` — `Identity` (and what it stamps), `TokenStore`, `LabelConflict`
+  - `api/internals/auth.py` — `Identity`, `TokenVerifier`; JWT signature checking
   - `api/internals/store.py` — `MetricStore`, the facade routes call
-  - `api/internals/providers/` — `MetricProvider`, the registry, `VictoriaMetricsProvider`
-- `tests/conftest.py` — authenticated and anonymous clients
+  - `api/internals/providers/` — `MetricProvider` and `VictoriaMetricsProvider`. Reads only
+- `bootstrap.py` — orchestration only: parse flags, render what `config/` describes, install,
+  start. No defaults and no templates of its own. There is no env file: units carry what they
+  need and the public key stays a file both vmauth and datum-api read, so the two cannot verify
+  against different keys. `--config-only` skips systemd, which is how the stack runs on a Mac.
+- `tests/conftest.py` — a fixed test keypair, and authenticated and anonymous clients
 - `tests/test_planner.py`, `test_rows.py` — translation and row shaping
-- `tests/test_api.py`, `test_ingest_contract.py`, `test_auth.py`, `test_providers.py`
+- `tests/test_api.py`, `test_auth.py`, `test_key_loading.py`, `test_oidc.py`, `test_providers.py`
+- `tests/test_bootstrap.py`, `test_vmauth_config.py` — what gets generated
 
-Every provider method is still unwritten. Four endpoints answer 501 until they land.
+The vmauth config is the write path's whole security boundary, so `test_vmauth_config.py` asserts
+its exact text rather than its shape. Local development lives in `.dev/`, which is gitignored so a
+test private key cannot be committed.
+
+`MetricProvider` retrieves only. Nothing in this service writes samples.
 
 ## Planned Layout
 
@@ -55,15 +71,17 @@ Every provider method is still unwritten. Four endpoints answer 501 until they l
 ## Shape
 
 ```
-producers ──POST /v1/ingest──▶ datum-api ──▶ MetricProvider ──▶ VictoriaMetrics
-                                                   ▲                    ▲
-                              datum-beacon ────────┤ evaluates rules    │ the only
-                                                   │                    │ one shipped
-                              Insights ────────────┘ via datum_sql
+producers ──JWT──▶ vmauth ──extra_label──▶ VictoriaMetrics
+                                                 ▲
+                     datum-api ──▶ MetricProvider┤ reads only
+                          ▲                      │
+                     Insights ── via datum_sql   │
+                                                 │
+                     datum-beacon ───────────────┘ evaluates rules
 ```
 
-Two processes: `datum-api` and `datum-beacon`. Nothing between the API and storage but the
-provider, which is one indirection and holds no logic of its own.
+Three processes: `vmauth`, `datum-api` and `datum-beacon`. Writes never reach Python. Between a
+read and storage there is nothing but the provider, which holds no logic of its own.
 
 ## Design Expectations
 
@@ -72,13 +90,19 @@ provider, which is one indirection and holds no logic of its own.
 - Push down what reduces bytes fetched: metric name, time window, label matchers. Everything else
   is the caller's problem, deliberately.
 - Every query gets a time window. Unbounded means one hour, never all of retention.
-- Identity comes from the token, never the request body. Token labels are enforced, not merged: a
-  body claiming a label its token already fixes is a 400.
+- Identity comes from the token, never the request body. On writes vmauth turns the JWT's
+  `vm_access.metrics_extra_labels` into `extra_label` args and VictoriaMetrics applies them over
+  whatever the body claimed, so a spoofed label loses. It is overridden, not refused — datum no
+  longer sees the payload, which is the price of keeping Python out of the write path.
+- Signatures are RSA or ECDSA. vmauth accepts nothing else, so datum must not either: the two
+  disagreeing about what a valid token is would be the bug. The same applies to how the key is
+  obtained — one `bootstrap.py` flag configures both, and `TokenVerifier` does the same discovery
+  vmauth does, refreshing on the same five minutes.
 - Auth attaches to the `/v1` mount, not to individual routes, so a new route is authenticated by
   default. It resolves before validation, so a stranger sending nonsense gets 401 and learns
   nothing about the schema.
-- A second storage engine is a new file in `providers/` and one `register()` call. If it needs
-  anything else, the seam is wrong and that is the bug to fix.
+- A second storage engine is a new file in `providers/` and one changed line in `app.py`. If it
+  needs anything else, the seam is wrong and that is the bug to fix.
 
 ## Facts That Constrain Design
 

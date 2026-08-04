@@ -13,10 +13,14 @@ build/
 .coverage.*
 htmlcov/
 
-# secrets and local settings; DATUM_URL and DATUM_TOKENS live here
+# secrets and local settings
 .env
 .env.*
 .env.example
+
+# local development: test keypair, generated vmauth config, store data
+.dev/
+victoria-metrics-data/
 
 # VictoriaMetrics data, when the server is run from inside the repo
 victoriametrics-data/

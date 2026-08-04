@@ -3,20 +3,18 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-DEFAULT_BACKEND = "victoriametrics"
-
 
 @dataclass(frozen=True)
 class Settings:
-    """How this service talks to the metrics store.
+    """How the API talks to the metrics store.
 
-    No credential: the store listens on loopback and FastAPI is the only way in.
-    The tokens Datum *accepts* are a different thing and live in `DATUM_TOKENS`,
-    read by `TokenStore.from_env`.
+    No credential: the store listens on loopback, reads come through this
+    service and writes come through vmauth. The key callers are verified with is
+    a different thing and lives in `DATUM_JWT_PUBLIC_KEY_FILE`, read by
+    `TokenVerifier.from_env`. `bootstrap.py` sets both on the unit.
     """
 
     url: str
-    backend: str = DEFAULT_BACKEND
     dialect: str = "mysql"
     mode: str = "raw"
     # BI tools paginate tables. Over a relative window that is incoherent, so the
@@ -30,7 +28,6 @@ class Settings:
             raise RuntimeError("DATUM_URL is not set; point it at the metrics store.")
         return cls(
             url=url,
-            backend=os.environ.get("DATUM_BACKEND", DEFAULT_BACKEND),
             dialect=os.environ.get("DATUM_DIALECT", "mysql"),
             mode=os.environ.get("DATUM_MODE", "raw"),
             ignore_pagination=os.environ.get("DATUM_IGNORE_PAGINATION", "1") != "0",

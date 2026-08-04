@@ -6,13 +6,10 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import UTC, datetime
-from typing import ClassVar
 
 from datum.api.internals.providers.base import MetricProvider, ProviderError
-from datum.api.internals.schemas import Sample
 from datum_sql import QuerySpec
 
-IMPORT_PATH = "/api/v1/import/prometheus"
 QUERY_PATH = "/api/v1/query"
 RANGE_PATH = "/api/v1/query_range"
 LABELS_PATH = "/api/v1/labels"
@@ -23,33 +20,14 @@ class VictoriaMetricsProvider(MetricProvider):
     """The production provider. HTTP against a Prometheus-compatible API.
 
     No credential: VictoriaMetrics runs on the same machine and must listen on
-    loopback, since it has no auth of its own. FastAPI is the only way in.
+    loopback, since it has no auth of its own. Reads arrive through this
+    service; writes arrive through vmauth.
     """
-
-    name: ClassVar[str] = "victoriametrics"
 
     def __init__(self, url: str, timeout: float = 10.0, **options):
         self.url = url.rstrip("/")
         self.timeout = timeout
         self.options = options
-
-    def write(self, samples: list[Sample]) -> int:
-        """Import in Prometheus exposition format, one sample per line."""
-        if not samples:
-            return 0
-
-        body = "\n".join(self.render(sample) for sample in samples)
-        self._post(IMPORT_PATH, body.encode())
-        return len(samples)
-
-    @staticmethod
-    def render(sample: Sample) -> str:
-        """`metric{label="value"} 12.5 1754308800000`, milliseconds since epoch."""
-        pairs = ",".join(
-            f'{name}="{escape(value)}"' for name, value in sorted(sample.labels.items())
-        )
-        series = f"{sample.metric}{{{pairs}}}" if pairs else sample.metric
-        return f"{series} {sample.value} {int(sample.ts.timestamp() * 1000)}"
 
     def fetch(self, spec: QuerySpec) -> list[dict]:
         """`raw` reads what is stored; `step` resamples onto the grid."""
@@ -110,24 +88,14 @@ class VictoriaMetricsProvider(MetricProvider):
             raise ProviderError(f"{path} failed: {payload.get('error', payload)}")
         return payload.get("data", [])
 
-    def _post(self, path: str, body: bytes) -> None:
-        request = urllib.request.Request(f"{self.url}{path}", data=body, method="POST")
-        request.add_header("Content-Type", "text/plain; charset=utf-8")
-        self._call(request, path, expect_json=False)
-
-    def _call(self, request, path: str, expect_json: bool = True):
+    def _call(self, request, path: str):
         """Anything other than a clean 2xx is a `ProviderError`, never a silent drop."""
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                return json.loads(response.read()) if expect_json else None
+                return json.loads(response.read())
         except urllib.error.HTTPError as refused:
             raise ProviderError(f"{path} returned {refused.code}: {refused.reason}") from refused
         except (urllib.error.URLError, TimeoutError) as unreachable:
             raise ProviderError(f"{self.url} is unreachable: {unreachable}") from unreachable
         except json.JSONDecodeError as unreadable:
             raise ProviderError(f"{path} did not return JSON: {unreadable}") from unreadable
-
-
-def escape(value: str) -> str:
-    """Backslash, quote and newline, per the exposition format."""
-    return value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")

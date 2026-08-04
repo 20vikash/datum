@@ -1,69 +1,100 @@
-"""Run this script to bootstrap the datum service."""
+"""Generate the config for datum's services, then install and start them.
 
+Everything this writes lives under one directory. There is no env file: what a
+service needs is baked into its unit, and the JWT public key stays a file on
+disk that both vmauth and datum-api read.
+"""
+
+import argparse
 import os
 import platform
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parent
-SERVICES = Path.home() / "services"
-SYSTEMD = Path.home() / ".config" / "systemd" / "user"
-DATA = Path.home() / ".local" / "share" / "datum" / "victoria-metrics"
-ENV_FILE = SERVICES / "datum.env"
+from datum.config import units
+from datum.config.paths import DATA, LOGS, REPO, SERVICES, SYSTEMD, UVICORN, VMAUTH_CONFIG
+from datum.config.units import ApiSettings
+from datum.config.victoria import VictoriaSettings
+from datum.config.vmauth import VmauthSettings, build_vmauth_config
 
-VICTORIA_ADDRESS = "127.0.0.1:8428"
-DATUM_ADDRESS = "127.0.0.1"
-DATUM_PORT = 8000
-RETENTION = "12"
-MEMORY_PERCENT = "40"
-WORKERS = "2"
 
-# Cardinality limiter. `-1` counts new series and publishes the counters without
-# dropping anything, because over the limit VictoriaMetrics discards silently:
-# the writer still gets 204 and only vm_hourly_series_limit_rows_dropped_total
-# moves. Watch those counters, then set a real number once the normal rate is
-# known. See datum_client's README for why series churn is the thing to watch.
-HOURLY_SERIES = "-1"
-DAILY_SERIES = "-1"
+def absolute_path(value: str) -> Path:
+    """Resolved at parse time: systemd has no working directory to resolve
+    against, and a relative path in the printed commands works from one place."""
+    return Path(value).expanduser().resolve()
 
-VictoriaMetricsUnit = """[Unit]
-Description=VictoriaMetrics for Datum
-After=network.target
 
-[Service]
-Type=simple
-ExecStart={binary} \\
-  -httpListenAddr={address} \\
-  -storageDataPath={data} \\
-  -retentionPeriod={retention} \\
-  -memory.allowedPercent={memory} \\
-  -storage.maxHourlySeries={hourly} \\
-  -storage.maxDailySeries={daily}
-Restart=always
-RestartSec=5
+def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="bootstrap.py",
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
 
-[Install]
-WantedBy=default.target
-"""
+    verification = parser.add_argument_group(
+        "verification", "How vmauth checks the JWTs producers send. Pick exactly one."
+    )
+    verification.add_argument(
+        "--public-key",
+        type=absolute_path,
+        metavar="PATH",
+        help="PEM file holding Central's public key. Both services read it.",
+    )
+    verification.add_argument(
+        "--oidc-issuer",
+        metavar="URL",
+        help="Fetch keys from {issuer}/.well-known/openid-configuration instead.",
+    )
+    verification.add_argument(
+        "--skip-verify",
+        action="store_true",
+        help="Accept unsigned tokens. Local testing only: anyone can write as anyone.",
+    )
 
-DatumApiUnit = """[Unit]
-Description=Datum API
-After=victoria-metrics.service
-Wants=victoria-metrics.service
+    store = VictoriaSettings()
+    api = ApiSettings()
+    parser.add_argument("--victoria-listen", default=store.listen)
+    parser.add_argument("--vmauth-listen", default=VmauthSettings.listen)
+    parser.add_argument("--datum-host", default=api.host)
+    parser.add_argument("--datum-port", type=int, default=api.port)
+    parser.add_argument("--workers", default=api.workers)
+    parser.add_argument("--retention", default=store.retention, help="Months the store keeps.")
+    parser.add_argument("--memory-percent", default=store.memory_percent)
+    parser.add_argument("--config-dir", type=absolute_path, default=SERVICES)
+    parser.add_argument("--data-dir", type=absolute_path, default=DATA,
+                        help="Where the store keeps data.")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print what would be written, touch nothing, start nothing.",
+    )
+    parser.add_argument(
+        "--config-only",
+        action="store_true",
+        help="Write the vmauth config and print how to run the three processes. "
+        "No units, no systemd, so it works anywhere.",
+    )
+    return parser.parse_args(argv)
 
-[Service]
-Type=simple
-WorkingDirectory={repo}
-EnvironmentFile={env_file}
-ExecStart={uvicorn} datum:create_app --factory \\
-  --host {host} --port {port} --workers {workers}
-Restart=always
-RestartSec=5
 
-[Install]
-WantedBy=default.target
-"""
+def build_vmauth_settings(arguments: argparse.Namespace) -> VmauthSettings:
+    """Check the key exists here, before anything is written."""
+    key = arguments.public_key
+    if key is not None and not key.is_file():
+        raise RuntimeError(f"{key} is not a file. Point --public-key at Central's PEM.")
+
+    settings = VmauthSettings(
+        victoria_url=VictoriaSettings(listen=arguments.victoria_listen).url,
+        listen=arguments.vmauth_listen,
+        public_key_path=key,
+        oidc_issuer=arguments.oidc_issuer or "",
+        skip_verify=arguments.skip_verify,
+    )
+    settings.mode  # noqa: B018 -- raises on a missing or ambiguous choice
+    return settings
+
 
 def require_linux():
     if platform.system() != "Linux":
@@ -81,26 +112,35 @@ def run_command(command: list[str], check: bool = True) -> subprocess.CompletedP
     return result
 
 
-def find_binary(name: str, hint: str) -> str:
-    """Locate a required executable, saying how to get it when it is missing."""
-    found = shutil.which(name)
-    if not found:
-        raise RuntimeError(f"{name} is not on PATH. {hint}")
-    return found
+def find_binary(name: str, hint: str, required: bool = True) -> str:
+    """Locate a required executable, saying how to get it when it is missing.
 
-
-def install_unit(name: str, unit: str) -> bool:
-    """Write the unit under ~/services and link it where systemd --user looks.
-
-    Returns whether anything changed, so an unchanged run restarts nothing.
+    A preview only prints, so it names the binary rather than refusing on a
+    host where nothing is installed yet.
     """
-    SERVICES.mkdir(parents=True, exist_ok=True)
-    SYSTEMD.mkdir(parents=True, exist_ok=True)
+    found = shutil.which(name)
+    if found:
+        return found
+    if required:
+        raise RuntimeError(f"{name} is not on PATH. {hint}")
+    return name
 
-    path = SERVICES / f"{name}.service"
-    changed = not path.exists() or path.read_text() != unit
+
+def write_once(path: Path, content: str, mode: int = 0o644) -> bool:
+    """Write only when the content differs, so a repeat run restarts nothing."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    changed = not path.exists() or path.read_text() != content
     if changed:
-        path.write_text(unit)
+        path.write_text(content)
+    path.chmod(mode)
+    return changed
+
+
+def install_unit(name: str, unit: str, config_dir: Path) -> bool:
+    """Write the unit under the config dir and link it where systemd looks."""
+    SYSTEMD.mkdir(parents=True, exist_ok=True)
+    path = config_dir / f"{name}.service"
+    changed = write_once(path, unit)
 
     link = SYSTEMD / f"{name}.service"
     if not link.is_symlink() or link.readlink() != path:
@@ -113,43 +153,60 @@ def install_unit(name: str, unit: str) -> bool:
     return changed
 
 
-def require_env_file() -> None:
-    """The env file holds tokens, so it is yours to write. Fail here, not at systemd start."""
-    if not ENV_FILE.exists():
-        raise RuntimeError(
-            f"{ENV_FILE} is missing. Create it with DATUM_URL and DATUM_TOKENS, "
-            "then chmod 600 it and run this again."
-        )
-    if ENV_FILE.stat().st_mode & 0o077:
-        raise RuntimeError(f"{ENV_FILE} is readable by others. Run: chmod 600 {ENV_FILE}")
-
-
-def build_units() -> dict[str, str]:
+def find_binaries(required: bool = True) -> tuple[str, str]:
     victoria = find_binary(
         "victoria-metrics",
         "Install it from https://github.com/VictoriaMetrics/VictoriaMetrics/releases",
+        required,
     )
-    uvicorn = REPO / ".venv" / "bin" / "uvicorn"
-    if not uvicorn.exists():
-        raise RuntimeError(f"{uvicorn} is missing. Run `uv sync --all-groups` in {REPO} first.")
+    vmauth = find_binary(
+        "vmauth",
+        "It ships in the vmutils archive on the VictoriaMetrics releases page.",
+        required,
+    )
+    if required and not UVICORN.exists():
+        raise RuntimeError(f"{UVICORN} is missing. Run `uv sync --all-groups` in {REPO} first.")
+    return victoria, vmauth
 
+
+def store_of(arguments: argparse.Namespace) -> VictoriaSettings:
+    return VictoriaSettings(
+        listen=arguments.victoria_listen,
+        retention=arguments.retention,
+        memory_percent=arguments.memory_percent,
+    )
+
+
+def build_units(arguments: argparse.Namespace, settings: VmauthSettings) -> dict[str, str]:
+    victoria, vmauth = find_binaries(required=not arguments.dry_run)
+    store = store_of(arguments)
     return {
-        "victoria-metrics": VictoriaMetricsUnit.format(
+        "victoria-metrics": units.VICTORIA_METRICS.format(
             binary=victoria,
-            address=VICTORIA_ADDRESS,
-            data=DATA,
-            retention=RETENTION,
-            memory=MEMORY_PERCENT,
-            hourly=HOURLY_SERIES,
-            daily=DAILY_SERIES,
+            listen=store.listen,
+            data=arguments.data_dir,
+            retention=store.retention,
+            memory=store.memory_percent,
+            hourly=store.hourly_series,
+            daily=store.daily_series,
         ),
-        "datum-api": DatumApiUnit.format(
+        "vmauth": units.VMAUTH.format(
+            binary=vmauth,
+            config=arguments.config_dir / VMAUTH_CONFIG,
+            listen=settings.listen,
+            access_log=LOGS / "vmauth-access.log",
+            error_log=LOGS / "vmauth-error.log",
+        ),
+        "datum-api": units.DATUM_API.format(
             repo=REPO,
-            env_file=ENV_FILE,
-            uvicorn=uvicorn,
-            host=DATUM_ADDRESS,
-            port=DATUM_PORT,
-            workers=WORKERS,
+            victoria_url=store.url,
+            key_environment=settings.api_environment,
+            uvicorn=UVICORN,
+            host=arguments.datum_host,
+            port=arguments.datum_port,
+            workers=arguments.workers,
+            access_log=LOGS / "access.log",
+            error_log=LOGS / "error.log",
         ),
     }
 
@@ -173,25 +230,81 @@ def start(names: list[str], changed: set[str]) -> None:
             print(f"{name} already running with this unit.")
 
 
-def main() -> None:
-    """Bootstrap the datum service."""
+def report(settings: VmauthSettings, arguments: argparse.Namespace) -> None:
+    print(f"\nWrites: vmauth on {settings.listen}, verifying by {settings.mode}.")
+    print(f"Reads:  http://{arguments.datum_host}:{arguments.datum_port}")
+    print("VictoriaMetrics stays on loopback; nothing reaches it directly.")
+    print(f"Logs:   {LOGS}/access.log, error.log, vmauth-*.log")
+
+    if not settings.is_verifying:
+        print("\nWARNING: skip_verify is on. Signatures are not checked, so anyone")
+        print("who reaches the write port can push as any tenant.")
+    if not settings.is_verifying:
+        print("Reads stay closed: datum-api has no key, so every read is a 401.")
+
+
+def print_local_commands(arguments: argparse.Namespace, settings: VmauthSettings) -> None:
+    """Everything needed to run the three processes by hand, in order."""
+    victoria, vmauth = find_binaries(required=False)
+    store = store_of(arguments)
+    environment = settings.api_environment.replace("Environment=", "").strip()
+
+    print("\nRun these in three terminals:\n")
+    print(f"  {victoria} \\\n    -httpListenAddr={store.listen} \\")
+    print(f"    -storageDataPath={arguments.data_dir} -retentionPeriod={store.retention}\n")
+    print(f"  {vmauth} \\\n    -auth.config={arguments.config_dir / VMAUTH_CONFIG} \\")
+    print(f"    -httpListenAddr={settings.listen}\n")
+    print(f"  DATUM_URL={store.url} \\")
+    if environment:
+        print(f"  {environment} \\")
+    print(
+        f"    uv run uvicorn datum:create_app --factory "
+        f"--host {arguments.datum_host} --port {arguments.datum_port}"
+    )
+    print(f"\nWrites go to {settings.listen}, reads to {arguments.datum_host}:{arguments.datum_port}.")
+
+
+def main(argv: list[str] | None = None) -> None:
+    arguments = parse_arguments(argv)
+    settings = build_vmauth_settings(arguments)
+    config = build_vmauth_config(settings)
+
+    if arguments.dry_run:
+        print(f"--- {arguments.config_dir / VMAUTH_CONFIG} ---\n{config}")
+        for name, unit in build_units(arguments, settings).items():
+            print(f"--- {arguments.config_dir / f'{name}.service'} ---\n{unit}")
+        return
+
+    if arguments.config_only:
+        path = arguments.config_dir / VMAUTH_CONFIG
+        write_once(path, config, mode=0o600)
+        print(f"Wrote {path} ({settings.mode})")
+        print_local_commands(arguments, settings)
+        return
+
     require_linux()
-    print("Bootstrapping datum service...")
+    units = build_units(arguments, settings)
+    arguments.data_dir.mkdir(parents=True, exist_ok=True)
+    # systemd will not create the directory an `append:` path lives in.
+    LOGS.mkdir(parents=True, exist_ok=True)
 
-    SERVICES.mkdir(parents=True, exist_ok=True)
-    DATA.mkdir(parents=True, exist_ok=True)
-    require_env_file()
-    units = build_units()
-
-    changed = {name for name, unit in units.items() if install_unit(name, unit)}
+    changed = {
+        name for name, unit in units.items() if install_unit(name, unit, arguments.config_dir)
+    }
+    if write_once(arguments.config_dir / VMAUTH_CONFIG, config, mode=0o600):
+        changed.add("vmauth")
+        print(f"Installed vmauth config ({settings.mode})")
 
     enable_linger()
     start(list(units), changed)
-
-    print(f"\nDatum is on http://{DATUM_ADDRESS}:{DATUM_PORT}, VictoriaMetrics on loopback only.")
-    print(f"After editing {ENV_FILE}: systemctl --user restart datum-api")
-    print("Logs: journalctl --user -u datum-api -f")
+    report(settings, arguments)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except RuntimeError as refused:
+        # These messages are written for whoever ran the script; a traceback
+        # would only bury them.
+        print(f"\n{refused}", file=sys.stderr)
+        raise SystemExit(1) from None
