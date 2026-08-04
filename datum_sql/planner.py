@@ -206,14 +206,44 @@ def _order_of(statement: exp.Select) -> list[tuple[str, bool]]:
     return order
 
 
+def _strip_pagination(statement: exp.Select) -> exp.Select:
+    """Throw away the page window a BI tool attached, and any subquery it left.
+
+    Paging a metric query is incoherent: the window is relative, so every page
+    asks about a slightly later hour and `OFFSET` skips into a set that has
+    moved. Callers that page anyway get the whole window instead. ORDER BY is
+    kept — it is not part of the page window and costs nothing.
+    """
+    order = statement.args.get("order")
+    while True:
+        statement.set("limit", None)
+        statement.set("offset", None)
+        source = statement.find(exp.From)
+        if source is None or not isinstance(source.this, exp.Subquery):
+            break
+        inner = source.this.this
+        if not isinstance(inner, exp.Select):
+            break
+        statement = inner
+        order = order if order is not None else statement.args.get("order")
+
+    if order is not None:
+        statement.set("order", order)
+    return statement
+
+
 def plan(
     sql: str,
     dialect: str = "mysql",
     step: str | None = None,
     default_window: timedelta = DEFAULT_WINDOW,
     mode: str = "raw",
+    ignore_pagination: bool = False,
 ) -> QuerySpec:
     statement = sqlglot.parse_one(sql, read=dialect)
+    if ignore_pagination and isinstance(statement, exp.Select):
+        statement = _strip_pagination(statement)
+
     # Refused constructs are named first: a UNION is not a Select, and saying so
     # sends the caller looking for a missing SELECT that is right there.
     _refuse(statement)

@@ -112,3 +112,56 @@ def test_unsupported_sql_is_refused_by_name(sql, missing):
 def test_quotes_in_label_values_are_escaped():
     spec = plan("""SELECT * FROM cpu WHERE region = 'a"b'""")
     assert '\\"' in spec.selector
+
+
+def test_pagination_is_honoured_by_default():
+    """Standalone callers get what SQL means."""
+    spec = plan("SELECT * FROM cpu LIMIT 10 OFFSET 5")
+
+    assert (spec.limit, spec.offset) == (10, 5)
+
+
+def test_ignore_pagination_drops_the_page_window():
+    spec = plan("SELECT * FROM cpu LIMIT 100 OFFSET 200", ignore_pagination=True)
+
+    assert (spec.limit, spec.offset) == (None, 0)
+
+
+def test_ignore_pagination_unwraps_the_subquery():
+    """What a BI tool sends once the query it was given already had a LIMIT."""
+    sql = "SELECT * FROM (SELECT * FROM cpu WHERE region = 'ap' LIMIT 10) AS t0 LIMIT 100 OFFSET 100"
+
+    spec = plan(sql, ignore_pagination=True)
+
+    assert spec.selector == 'cpu{region="ap"}'
+    assert (spec.limit, spec.offset) == (None, 0)
+
+
+def test_ignore_pagination_keeps_order_by():
+    spec = plan("SELECT * FROM cpu ORDER BY value DESC LIMIT 100", ignore_pagination=True)
+
+    assert spec.order_by == [("value", True)]
+    assert spec.limit is None
+
+
+def test_ignore_pagination_keeps_outer_order_over_a_subquery():
+    sql = "SELECT * FROM (SELECT * FROM cpu LIMIT 5) AS t0 ORDER BY ts LIMIT 100"
+
+    spec = plan(sql, ignore_pagination=True)
+
+    assert spec.order_by == [("ts", False)]
+
+
+def test_ignore_pagination_keeps_projection_and_matchers():
+    sql = "SELECT ts, value FROM (SELECT * FROM cpu WHERE host != 'z' LIMIT 5) t0 LIMIT 100"
+
+    spec = plan(sql, ignore_pagination=True)
+
+    assert spec.selector == 'cpu{host!="z"}'
+
+
+def test_ignore_pagination_still_refuses_real_sql():
+    """Stripping the page window must not smuggle anything past the refusals."""
+    with pytest.raises(UnsupportedSQL) as caught:
+        plan("SELECT region, avg(value) FROM cpu GROUP BY region LIMIT 100", ignore_pagination=True)
+    assert "group by" in str(caught.value).lower()

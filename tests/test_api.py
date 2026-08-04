@@ -28,8 +28,8 @@ def test_explain_returns_the_promql_without_fetching(client):
     assert response.json()["promql"] == 'system_cpu_percent{region="ap-south-1"}'
 
 
-def test_explain_reports_the_page_window(client):
-    """The shape BI tools send: the query, plus a page window appended."""
+def test_the_page_window_is_dropped(client):
+    """BI tools paginate; over a relative window that is incoherent, so it goes."""
     response = client.post(
         "/v1/query/explain",
         json={
@@ -41,7 +41,7 @@ def test_explain_reports_the_page_window(client):
     assert response.status_code == 200
     body = response.json()
     assert body["promql"] == 'system_cpu_percent{region="ap-south-1"}'
-    assert (body["limit"], body["offset"]) == (100, 200)
+    assert (body["limit"], body["offset"]) == (None, 0)
 
 
 def test_refused_sql_is_a_400_not_a_500(client):

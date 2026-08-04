@@ -13,10 +13,17 @@ class MetricStore:
     provider below only stores and retrieves.
     """
 
-    def __init__(self, provider: MetricProvider, dialect: str = "mysql", mode: str = "raw"):
+    def __init__(
+        self,
+        provider: MetricProvider,
+        dialect: str = "mysql",
+        mode: str = "raw",
+        ignore_pagination: bool = True,
+    ):
         self.provider = provider
         self.dialect = dialect
         self.mode = mode
+        self.ignore_pagination = ignore_pagination
 
     def ingest(self, samples: list[Sample], identity: Identity) -> int:
         """Stamp the caller onto every sample, then hand off. Returns how many landed."""
@@ -34,7 +41,12 @@ class MetricStore:
 
     def get_plan(self, sql: str, dialect: str | None = None, mode: str | None = None) -> QuerySpec:
         """Translate without fetching. Raises `UnsupportedSQL` on a refusal."""
-        return plan(sql, dialect=dialect or self.dialect, mode=mode or self.mode)
+        return plan(
+            sql,
+            dialect=dialect or self.dialect,
+            mode=mode or self.mode,
+            ignore_pagination=self.ignore_pagination,
+        )
 
     @property
     def metrics(self) -> list[str]:

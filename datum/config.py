@@ -19,6 +19,9 @@ class Settings:
     backend: str = DEFAULT_BACKEND
     dialect: str = "mysql"
     mode: str = "raw"
+    # BI tools paginate tables. Over a relative window that is incoherent, so the
+    # page window is dropped and the caller gets the whole window instead.
+    ignore_pagination: bool = True
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -30,4 +33,5 @@ class Settings:
             backend=os.environ.get("DATUM_BACKEND", DEFAULT_BACKEND),
             dialect=os.environ.get("DATUM_DIALECT", "mysql"),
             mode=os.environ.get("DATUM_MODE", "raw"),
+            ignore_pagination=os.environ.get("DATUM_IGNORE_PAGINATION", "1") != "0",
         )

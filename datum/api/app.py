@@ -22,7 +22,12 @@ TAGS = [
 async def lifespan(app: FastAPI):
     settings: Settings = app.state.settings
     provider = get_provider(settings.backend, url=settings.url)
-    app.state.store = MetricStore(provider, dialect=settings.dialect, mode=settings.mode)
+    app.state.store = MetricStore(
+        provider,
+        dialect=settings.dialect,
+        mode=settings.mode,
+        ignore_pagination=settings.ignore_pagination,
+    )
     yield
     app.state.store = None
 

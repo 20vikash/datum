@@ -176,6 +176,7 @@ uv run uvicorn "datum:create_app" --factory --reload --env-file .env
 | `DATUM_TOKENS` | none | who may push. Unset means every call is a 401 |
 | `DATUM_DIALECT` | `mysql` | SQL flavour the translator reads |
 | `DATUM_MODE` | `raw` | `raw` or `step` |
+| `DATUM_IGNORE_PAGINATION` | `1` | drop `LIMIT`/`OFFSET` sent by BI tools. `0` honours them |
 
 ## Putting it on a server
 
@@ -346,9 +347,19 @@ OR              -> "OR is not supported. Use IN (...)"
 subquery        -> "subquery is not supported..."
 ```
 
-`LIMIT` and `OFFSET` are honoured, but they are not pushed down — PromQL has no
-`LIMIT`, so the whole window is fetched and `shape()` slices it. They bound what
-you receive, never what is read.
+`LIMIT` and `OFFSET` are honoured, but never pushed down — PromQL has no `LIMIT`,
+so the whole window is fetched and `shape()` slices it. They bound what you
+receive, never what is read.
+
+The service drops them instead. Paging a metric query does not work: the window
+is relative, so page 2 asks about a slightly later hour and `OFFSET` skips into a
+set that has moved, quietly repeating and skipping rows. `DATUM_IGNORE_PAGINATION`
+is on by default, which throws away the page window — and the subquery a BI tool
+wraps around a query that already had a `LIMIT`. `ORDER BY` is kept. Set it to `0`
+to honour `LIMIT`/`OFFSET` as written.
+
+`plan()` itself still honours them: `ignore_pagination` defaults to `False`, so
+`datum_sql` on its own means what SQL means.
 
 Fetch the rows and do it in your own code, or run two queries.
 
