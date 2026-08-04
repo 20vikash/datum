@@ -13,6 +13,11 @@ PUBLIC_KEY = "public_key"
 OIDC = "oidc"
 SKIP_VERIFY = "skip_verify"
 
+# What datum-api reads to verify the same tokens vmauth does. Named here so one
+# mode decides both sides at once.
+PUBLIC_KEY_FILE_VARIABLE = "DATUM_JWT_PUBLIC_KEY_FILE"
+ISSUER_VARIABLE = "DATUM_OIDC_ISSUER"
+
 
 @dataclass(frozen=True)
 class VmauthSettings:
@@ -57,6 +62,19 @@ class VmauthSettings:
     def is_verifying(self) -> bool:
         """False only when signatures are not checked at all."""
         return self.mode != SKIP_VERIFY
+
+    @property
+    def api_environment(self) -> str:
+        """The `Environment=` line datum-api needs to verify what vmauth verifies.
+
+        skip_verify has nothing to give it, so reads stay closed while writes
+        are open -- deliberate for a local testing mode.
+        """
+        if self.mode == PUBLIC_KEY:
+            return f"Environment={PUBLIC_KEY_FILE_VARIABLE}={self.public_key_path}\n"
+        if self.mode == OIDC:
+            return f"Environment={ISSUER_VARIABLE}={self.oidc_issuer}\n"
+        return ""
 
 
 # vmauth reads `vm_access.metrics_extra_labels` off the token and VictoriaMetrics

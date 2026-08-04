@@ -3,7 +3,7 @@
 import pytest
 
 import bootstrap
-from datum.api.internals.auth import PUBLIC_KEY_FILE_VARIABLE
+from datum.config.vmauth import PUBLIC_KEY_FILE_VARIABLE
 
 
 @pytest.fixture

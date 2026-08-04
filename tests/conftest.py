@@ -66,6 +66,19 @@ def mint(claims: dict | None = None, key: str | None = None, headers: dict | Non
 TOKEN = mint()
 
 
+def tamper(token: str) -> str:
+    """Break the signature for real.
+
+    Flipping the last character is not enough: a 2048-bit RSA signature is 256
+    bytes, so base64url's final character carries two significant bits and four
+    of them decode to the same signature. Mid-segment characters carry six.
+    """
+    header, payload, signature = token.split(".")
+    index = len(signature) // 2
+    swapped = "A" if signature[index] != "A" else "B"
+    return f"{header}.{payload}.{signature[:index]}{swapped}{signature[index + 1:]}"
+
+
 class FakeProvider(MetricProvider):
     """Stands in for a real store, so route tests do not depend on how far
     `VictoriaMetricsProvider` has been written."""

@@ -161,9 +161,11 @@ cd ~/datum && uv sync --all-groups
 .venv/bin/python bootstrap.py --public-key ~/services/central.pub
 ```
 
-`bootstrap.py` asks if you leave the verification out, and `--dry-run` prints
-every file it would write without touching anything. `--help` lists the rest:
-`--vmauth-listen`, `--datum-port`, `--retention`, `--config-dir`.
+`bootstrap.py` asks if you leave the verification out. `--dry-run` prints every
+file it would write without touching anything, and `--config-only` writes the
+vmauth config and prints the three commands to run by hand — no units, no
+systemd, so it works on a Mac. `--help` lists the rest: `--vmauth-listen`,
+`--datum-port`, `--retention`, `--config-dir`.
 
 Moving to a JWKS endpoint later is one flag:
 

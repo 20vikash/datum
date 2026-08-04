@@ -13,7 +13,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-from datum.api.internals.auth import ISSUER_VARIABLE, PUBLIC_KEY_FILE_VARIABLE
 from datum.config import units
 from datum.config.paths import DATA, LOGS, REPO, SERVICES, SYSTEMD, UVICORN, VMAUTH_CONFIG
 from datum.config.units import ApiSettings
@@ -62,6 +61,12 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         "--dry-run",
         action="store_true",
         help="Print what would be written, touch nothing, start nothing.",
+    )
+    parser.add_argument(
+        "--config-only",
+        action="store_true",
+        help="Write the vmauth config and print how to run the three processes. "
+        "No units, no systemd, so it works anywhere.",
     )
     return parser.parse_args(argv)
 
@@ -128,15 +133,15 @@ def run_command(command: list[str], check: bool = True) -> subprocess.CompletedP
 def find_binary(name: str, hint: str, required: bool = True) -> str:
     """Locate a required executable, saying how to get it when it is missing.
 
-    A dry run only prints, so it names the binary it would have used rather
-    than refusing on a host where nothing is installed yet.
+    A preview only prints, so it names the binary rather than refusing on a
+    host where nothing is installed yet.
     """
     found = shutil.which(name)
     if found:
         return found
     if required:
         raise RuntimeError(f"{name} is not on PATH. {hint}")
-    return f"/usr/local/bin/{name}"
+    return name
 
 
 def write_once(path: Path, content: str, mode: int = 0o644) -> bool:
@@ -166,8 +171,7 @@ def install_unit(name: str, unit: str, config_dir: Path) -> bool:
     return changed
 
 
-def build_units(arguments: argparse.Namespace, settings: VmauthSettings) -> dict[str, str]:
-    required = not arguments.dry_run
+def find_binaries(required: bool = True) -> tuple[str, str]:
     victoria = find_binary(
         "victoria-metrics",
         "Install it from https://github.com/VictoriaMetrics/VictoriaMetrics/releases",
@@ -180,21 +184,20 @@ def build_units(arguments: argparse.Namespace, settings: VmauthSettings) -> dict
     )
     if required and not UVICORN.exists():
         raise RuntimeError(f"{UVICORN} is missing. Run `uv sync --all-groups` in {REPO} first.")
+    return victoria, vmauth
 
-    # Datum verifies reads the same way vmauth verifies writes: the same key
-    # file, or the same issuer. skip_verify has neither, so reads stay closed
-    # while writes are open -- deliberately, since it is a local testing mode.
-    key_environment = ""
-    if settings.public_key_path is not None:
-        key_environment = f"Environment={PUBLIC_KEY_FILE_VARIABLE}={settings.public_key_path}\n"
-    elif settings.oidc_issuer:
-        key_environment = f"Environment={ISSUER_VARIABLE}={settings.oidc_issuer}\n"
 
-    store = VictoriaSettings(
+def store_of(arguments: argparse.Namespace) -> VictoriaSettings:
+    return VictoriaSettings(
         listen=arguments.victoria_listen,
         retention=arguments.retention,
         memory_percent=arguments.memory_percent,
     )
+
+
+def build_units(arguments: argparse.Namespace, settings: VmauthSettings) -> dict[str, str]:
+    victoria, vmauth = find_binaries(required=not arguments.dry_run)
+    store = store_of(arguments)
     return {
         "victoria-metrics": units.VICTORIA_METRICS.format(
             binary=victoria,
@@ -215,7 +218,7 @@ def build_units(arguments: argparse.Namespace, settings: VmauthSettings) -> dict
         "datum-api": units.DATUM_API.format(
             repo=REPO,
             victoria_url=store.url,
-            key_environment=key_environment,
+            key_environment=settings.api_environment,
             uvicorn=UVICORN,
             host=arguments.datum_host,
             port=arguments.datum_port,
@@ -258,22 +261,48 @@ def report(settings: VmauthSettings, arguments: argparse.Namespace) -> None:
         print("Reads stay closed: datum-api has no key, so every read is a 401.")
 
 
+def print_local_commands(arguments: argparse.Namespace, settings: VmauthSettings) -> None:
+    """Everything needed to run the three processes by hand, in order."""
+    victoria, vmauth = find_binaries(required=False)
+    store = store_of(arguments)
+    environment = settings.api_environment.replace("Environment=", "").strip()
+
+    print("\nRun these in three terminals:\n")
+    print(f"  {victoria} \\\n    -httpListenAddr={store.listen} \\")
+    print(f"    -storageDataPath={DATA} -retentionPeriod={store.retention}\n")
+    print(f"  {vmauth} \\\n    -auth.config={arguments.config_dir / VMAUTH_CONFIG} \\")
+    print(f"    -httpListenAddr={settings.listen}\n")
+    print(f"  DATUM_URL={store.url} \\")
+    if environment:
+        print(f"  {environment} \\")
+    print(
+        f"    uv run uvicorn datum:create_app --factory "
+        f"--host {arguments.datum_host} --port {arguments.datum_port}"
+    )
+    print(f"\nWrites go to {settings.listen}, reads to {arguments.datum_host}:{arguments.datum_port}.")
+
+
 def main(argv: list[str] | None = None) -> None:
     arguments = parse_arguments(argv)
-    if not arguments.dry_run:
-        require_linux()
-
     ask_for_verification(arguments)
     settings = build_vmauth_settings(arguments)
     config = build_vmauth_config(settings)
-    units = build_units(arguments, settings)
 
     if arguments.dry_run:
         print(f"--- {arguments.config_dir / VMAUTH_CONFIG} ---\n{config}")
-        for name, unit in units.items():
+        for name, unit in build_units(arguments, settings).items():
             print(f"--- {arguments.config_dir / f'{name}.service'} ---\n{unit}")
         return
 
+    if arguments.config_only:
+        path = arguments.config_dir / VMAUTH_CONFIG
+        write_once(path, config, mode=0o600)
+        print(f"Wrote {path} ({settings.mode})")
+        print_local_commands(arguments, settings)
+        return
+
+    require_linux()
+    units = build_units(arguments, settings)
     DATA.mkdir(parents=True, exist_ok=True)
     # systemd will not create the directory an `append:` path lives in.
     LOGS.mkdir(parents=True, exist_ok=True)

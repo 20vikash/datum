@@ -1,7 +1,7 @@
 import time
 
 from datum.api.internals import Identity, TokenVerifier
-from tests.conftest import IDENTITY, PUBLIC_KEY, TOKEN, mint
+from tests.conftest import IDENTITY, PUBLIC_KEY, TOKEN, mint, tamper
 
 
 def test_a_signed_token_resolves_to_its_identity(tokens):
@@ -22,9 +22,7 @@ def test_a_token_signed_by_someone_else_is_refused(tokens):
 
 
 def test_a_tampered_signature_is_refused(tokens):
-    tampered = TOKEN[:-1] + ("A" if TOKEN[-1] != "A" else "B")
-
-    assert tokens.resolve(tampered) is None
+    assert tokens.resolve(tamper(TOKEN)) is None
 
 
 def test_an_expired_token_is_refused(tokens):

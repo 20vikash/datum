@@ -9,8 +9,7 @@ from pathlib import Path
 
 import jwt
 
-PUBLIC_KEY_FILE_VARIABLE = "DATUM_JWT_PUBLIC_KEY_FILE"
-ISSUER_VARIABLE = "DATUM_OIDC_ISSUER"
+from datum.config.vmauth import ISSUER_VARIABLE, PUBLIC_KEY_FILE_VARIABLE
 
 ACCESS_CLAIM = "vm_access"
 LABELS_CLAIM = "metrics_extra_labels"

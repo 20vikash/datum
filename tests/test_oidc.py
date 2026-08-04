@@ -12,8 +12,8 @@ import jwt
 import pytest
 
 from datum.api.internals import TokenVerifier
-from datum.api.internals.auth import ISSUER_VARIABLE, PUBLIC_KEY_FILE_VARIABLE
-from tests.conftest import CLAIMS, PUBLIC_KEY, mint
+from datum.config.vmauth import ISSUER_VARIABLE, PUBLIC_KEY_FILE_VARIABLE
+from tests.conftest import CLAIMS, PUBLIC_KEY, mint, tamper
 
 KEY_ID = "central-1"
 
@@ -51,8 +51,10 @@ class Issuer(BaseHTTPRequestHandler):
         pass
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def issuer():
+    """One server for the file: HTTPServer.shutdown() polls on a 0.5s tick,
+    which per test costs more than everything else here combined."""
     server = HTTPServer(("127.0.0.1", 0), Issuer)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     yield f"http://127.0.0.1:{server.server_port}"
@@ -79,10 +81,7 @@ def test_a_token_from_another_issuer_is_refused(issuer):
 
 
 def test_a_tampered_signature_is_refused(issuer):
-    good = signed_for(issuer)
-    tampered = good[:-1] + ("A" if good[-1] != "A" else "B")
-
-    assert TokenVerifier(oidc_issuer=issuer).resolve(tampered) is None
+    assert TokenVerifier(oidc_issuer=issuer).resolve(tamper(signed_for(issuer))) is None
 
 
 def test_the_key_set_is_fetched_once_and_reused(issuer):
