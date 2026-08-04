@@ -162,10 +162,48 @@ cd ~/datum && uv sync --all-groups
 ```
 
 `bootstrap.py` asks if you leave the verification out. `--dry-run` prints every
-file it would write without touching anything, and `--config-only` writes the
-vmauth config and prints the three commands to run by hand — no units, no
-systemd, so it works on a Mac. `--help` lists the rest: `--vmauth-listen`,
-`--datum-port`, `--retention`, `--config-dir`.
+file it would write without touching anything. `--help` lists the rest:
+`--vmauth-listen`, `--datum-port`, `--retention`, `--config-dir`, `--data-dir`.
+
+## Running the whole thing locally
+
+`--config-only` writes the vmauth config and prints the three commands to run
+by hand. No units and no systemd, so it works on a Mac:
+
+```bash
+mkdir -p .dev
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out .dev/central.key
+openssl rsa -in .dev/central.key -pubout -out .dev/central.pub
+chmod 600 .dev/central.key
+
+uv run python bootstrap.py --config-only \
+  --public-key .dev/central.pub --config-dir .dev --data-dir .dev/data
+```
+
+`.dev/` is gitignored. Run the three printed commands in three terminals, then
+mint a token to talk to them:
+
+```bash
+JWT=$(uv run --with 'pyjwt[crypto]' python -c "
+import jwt, time
+from pathlib import Path
+print(jwt.encode({'exp': int(time.time())+3600,
+  'vm_access': {'metrics_extra_labels': ['tenant_id=acme','source_id=pilot_1']}},
+  Path('.dev/central.key').read_text(), algorithm='RS256'))")
+
+curl -X POST http://127.0.0.1:8427/api/v1/import -H "Authorization: Bearer $JWT" \
+  -d '{"metric":{"__name__":"cpu"},"values":[7],"timestamps":['$(date +%s)'000]}'
+
+curl -X POST http://127.0.0.1:8000/v1/query -H "Authorization: Bearer $JWT" \
+  -H 'Content-Type: application/json' -d '{"sql":"SELECT * FROM cpu"}'
+```
+
+Tokens last an hour. An expired one is a 401 everywhere and looks exactly like
+a wrong key, so mint a fresh one before wondering what broke.
+
+`vmauth` is not in Homebrew. Take it from the `vmutils` archive on the
+[releases page](https://github.com/VictoriaMetrics/VictoriaMetrics/releases)
+and match your VictoriaMetrics version.
 
 Moving to a JWKS endpoint later is one flag:
 

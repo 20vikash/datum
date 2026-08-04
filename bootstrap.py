@@ -57,6 +57,7 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--retention", default=store.retention, help="Months the store keeps.")
     parser.add_argument("--memory-percent", default=store.memory_percent)
     parser.add_argument("--config-dir", type=Path, default=SERVICES)
+    parser.add_argument("--data-dir", type=Path, default=DATA, help="Where the store keeps data.")
     parser.add_argument(
         "--dry-run",
         action="store_true",
@@ -96,7 +97,13 @@ def ask_for_verification(arguments: argparse.Namespace) -> None:
 
 
 def build_vmauth_settings(arguments: argparse.Namespace) -> VmauthSettings:
-    """Resolve the key path here, so a missing file fails before anything is written."""
+    """Resolve every path here, so a missing file fails before anything is written.
+
+    Absolute throughout: systemd has no working directory to resolve against,
+    and a relative path in the printed commands only works from one place.
+    """
+    arguments.config_dir = arguments.config_dir.expanduser().resolve()
+    arguments.data_dir = arguments.data_dir.expanduser().resolve()
     key = arguments.public_key
     if key is not None:
         key = key.expanduser().resolve()
@@ -202,7 +209,7 @@ def build_units(arguments: argparse.Namespace, settings: VmauthSettings) -> dict
         "victoria-metrics": units.VICTORIA_METRICS.format(
             binary=victoria,
             listen=store.listen,
-            data=DATA,
+            data=arguments.data_dir,
             retention=store.retention,
             memory=store.memory_percent,
             hourly=store.hourly_series,
@@ -269,7 +276,7 @@ def print_local_commands(arguments: argparse.Namespace, settings: VmauthSettings
 
     print("\nRun these in three terminals:\n")
     print(f"  {victoria} \\\n    -httpListenAddr={store.listen} \\")
-    print(f"    -storageDataPath={DATA} -retentionPeriod={store.retention}\n")
+    print(f"    -storageDataPath={arguments.data_dir} -retentionPeriod={store.retention}\n")
     print(f"  {vmauth} \\\n    -auth.config={arguments.config_dir / VMAUTH_CONFIG} \\")
     print(f"    -httpListenAddr={settings.listen}\n")
     print(f"  DATUM_URL={store.url} \\")
@@ -303,7 +310,7 @@ def main(argv: list[str] | None = None) -> None:
 
     require_linux()
     units = build_units(arguments, settings)
-    DATA.mkdir(parents=True, exist_ok=True)
+    arguments.data_dir.mkdir(parents=True, exist_ok=True)
     # systemd will not create the directory an `append:` path lives in.
     LOGS.mkdir(parents=True, exist_ok=True)
 
