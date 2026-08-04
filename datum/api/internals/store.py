@@ -27,7 +27,7 @@ class MetricStore:
             ]
         )
 
-    def run(self, sql: str, dialect: str | None = None, mode: str | None = None) -> Result:
+    def query(self, sql: str, dialect: str | None = None, mode: str | None = None) -> Result:
         """Translate, fetch, then apply what PromQL cannot express."""
         spec = self.get_plan(sql, dialect, mode)
         return shape(self.provider.fetch(spec), spec)

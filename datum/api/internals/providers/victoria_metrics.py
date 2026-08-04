@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import json
+import math
 import urllib.error
+import urllib.parse
 import urllib.request
+from datetime import UTC, datetime
 from typing import ClassVar
 
 from datum.api.internals.providers.base import MetricProvider, ProviderError
@@ -10,7 +14,9 @@ from datum_sql import QuerySpec
 
 IMPORT_PATH = "/api/v1/import/prometheus"
 QUERY_PATH = "/api/v1/query"
-SERIES_PATH = "/api/v1/series"
+RANGE_PATH = "/api/v1/query_range"
+LABELS_PATH = "/api/v1/labels"
+NAME_VALUES_PATH = "/api/v1/label/__name__/values"
 
 
 class VictoriaMetricsProvider(MetricProvider):
@@ -46,29 +52,80 @@ class VictoriaMetricsProvider(MetricProvider):
         return f"{series} {sample.value} {int(sample.ts.timestamp() * 1000)}"
 
     def fetch(self, spec: QuerySpec) -> list[dict]:
-        raise NotImplementedError(f"GET {self.url}{QUERY_PATH} with {spec.selector!r}")
+        """`raw` reads what is stored; `step` resamples onto the grid."""
+        if spec.mode == "step":
+            data = self._get(
+                RANGE_PATH,
+                query=spec.selector,
+                start=spec.start.timestamp(),
+                end=spec.end.timestamp(),
+                step=spec.step,
+            )
+        else:
+            window = max(int((spec.end - spec.start).total_seconds()), 1)
+            data = self._get(
+                QUERY_PATH, query=f"{spec.selector}[{window}s]", time=spec.end.timestamp()
+            )
+        return self._rows(data)
 
     @property
     def metrics(self) -> list[str]:
-        raise NotImplementedError(f"GET {self.url}/api/v1/label/__name__/values")
+        return sorted(self._get(NAME_VALUES_PATH))
 
     def get_labels(self, metric: str) -> list[str]:
-        raise NotImplementedError(f"GET {self.url}{SERIES_PATH} for {metric!r}")
+        names = self._get(LABELS_PATH, **{"match[]": metric})
+        return sorted(name for name in names if name != "__name__")
 
     def get_label_values(self, metric: str, label: str) -> list[str]:
-        raise NotImplementedError(f"GET {self.url}/api/v1/label/{label}/values")
+        path = f"/api/v1/label/{urllib.parse.quote(label)}/values"
+        return sorted(self._get(path, **{"match[]": metric}))
+
+    @staticmethod
+    def _rows(data: dict) -> list[dict]:
+        """Flatten a PromQL matrix into rows.
+
+        Non-finite values are stale markers, not readings. They are dropped:
+        they mean "no data here", and they cannot be put in a JSON response.
+        """
+        rows = []
+        for series in data.get("result", []):
+            labels = {key: value for key, value in series["metric"].items() if key != "__name__"}
+            for seconds, value in series.get("values", []):
+                number = float(value)
+                if math.isfinite(number):
+                    rows.append(
+                        {
+                            **labels,
+                            "ts": datetime.fromtimestamp(float(seconds), UTC),
+                            "value": number,
+                        }
+                    )
+        return rows
+
+    def _get(self, path: str, **params):
+        """GET, and hand back the `data` VictoriaMetrics wrapped its answer in."""
+        url = f"{self.url}{path}?{urllib.parse.urlencode(params)}"
+        payload = self._call(urllib.request.Request(url, method="GET"), path)
+        if payload.get("status") != "success":
+            raise ProviderError(f"{path} failed: {payload.get('error', payload)}")
+        return payload.get("data", [])
 
     def _post(self, path: str, body: bytes) -> None:
-        """Anything other than a clean 2xx is a `ProviderError`, never a silent drop."""
         request = urllib.request.Request(f"{self.url}{path}", data=body, method="POST")
         request.add_header("Content-Type", "text/plain; charset=utf-8")
+        self._call(request, path, expect_json=False)
+
+    def _call(self, request, path: str, expect_json: bool = True):
+        """Anything other than a clean 2xx is a `ProviderError`, never a silent drop."""
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout):
-                return
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                return json.loads(response.read()) if expect_json else None
         except urllib.error.HTTPError as refused:
             raise ProviderError(f"{path} returned {refused.code}: {refused.reason}") from refused
         except (urllib.error.URLError, TimeoutError) as unreachable:
             raise ProviderError(f"{self.url} is unreachable: {unreachable}") from unreachable
+        except json.JSONDecodeError as unreadable:
+            raise ProviderError(f"{path} did not return JSON: {unreadable}") from unreadable
 
 
 def escape(value: str) -> str:

@@ -100,3 +100,34 @@ def test_an_unreachable_store_is_a_provider_error():
 
 def test_an_empty_batch_never_reaches_the_network():
     assert VictoriaMetricsProvider(url="http://127.0.0.1:1").write([]) == 0
+
+
+def test_matrix_rows_are_flattened_with_labels():
+    data = {
+        "result": [
+            {
+                "metric": {"__name__": "cpu", "host": "a"},
+                "values": [[1785836545, "1280"], [1785836605, "1290"]],
+            }
+        ]
+    }
+
+    rows = VictoriaMetricsProvider._rows(data)
+
+    assert len(rows) == 2
+    assert rows[0]["host"] == "a"
+    assert rows[0]["value"] == 1280.0
+    assert rows[0]["ts"] == datetime(2026, 8, 4, 9, 42, 25, tzinfo=UTC)
+    assert "__name__" not in rows[0]
+
+
+def test_stale_markers_are_dropped_not_stored():
+    data = {"result": [{"metric": {"__name__": "cpu"}, "values": [[1, "NaN"], [2, "1.5"]]}]}
+
+    rows = VictoriaMetricsProvider._rows(data)
+
+    assert [row["value"] for row in rows] == [1.5]
+
+
+def test_an_empty_result_is_no_rows():
+    assert VictoriaMetricsProvider._rows({"result": []}) == []

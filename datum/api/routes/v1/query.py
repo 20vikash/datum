@@ -17,7 +17,7 @@ router = APIRouter(tags=["query"])
 @router.post("/query")
 def query(body: QueryRequest, store: Store) -> QueryResponse:
     """Translate the SQL, fetch the rows, shape them."""
-    result = store.run(body.sql, body.dialect, body.mode)
+    result = store.query(body.sql, body.dialect, body.mode)
     return QueryResponse(columns=result.columns, rows=result.rows, truncated=result.truncated)
 
 
