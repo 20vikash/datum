@@ -5,6 +5,8 @@ Telemetry over VictoriaMetrics. Two pieces:
 - `datum_sql` — a standalone SQL to PromQL translator. No network, no dependencies
   beyond `sqlglot`.
 - `datum` — the HTTP service that fetches and serves.
+- `datum_client` — what producers import to push metrics. Standard library only;
+  see [`datum_client/README.md`](datum_client/README.md).
 
 ## datum_sql
 
