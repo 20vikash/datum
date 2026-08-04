@@ -169,6 +169,43 @@ def _choose_step(start: datetime, end: datetime, requested: str | None) -> str:
     return f"{step}s"
 
 
+def _projection(statement: exp.Select) -> list[str] | None:
+    """None means SELECT *."""
+    if any(isinstance(item, exp.Star) for item in statement.expressions):
+        return None
+    columns = []
+    for item in statement.expressions:
+        target = item.this if isinstance(item, exp.Alias) else item
+        name = _column_name(target)
+        if name is None:
+            raise UnsupportedSQL(f"Cannot project expression: {item.sql()}")
+        columns.append(item.alias_or_name if isinstance(item, exp.Alias) else name)
+    return columns
+
+
+def _limit_of(statement: exp.Select) -> int | None:
+    node = statement.args.get("limit")
+    return int(node.expression.this) if node is not None else None
+
+
+def _offset_of(statement: exp.Select) -> int:
+    node = statement.args.get("offset")
+    return int(node.expression.this) if node is not None else 0
+
+
+def _order_of(statement: exp.Select) -> list[tuple[str, bool]]:
+    node = statement.args.get("order")
+    if node is None:
+        return []
+    order = []
+    for ordered in node.expressions:
+        name = _column_name(ordered.this)
+        if name is None:
+            raise UnsupportedSQL(f"Cannot order by: {ordered.sql()}")
+        order.append((name, bool(ordered.args.get("desc"))))
+    return order
+
+
 def plan(
     sql: str,
     dialect: str = "mysql",
@@ -177,9 +214,11 @@ def plan(
     mode: str = "raw",
 ) -> QuerySpec:
     statement = sqlglot.parse_one(sql, read=dialect)
+    # Refused constructs are named first: a UNION is not a Select, and saying so
+    # sends the caller looking for a missing SELECT that is right there.
+    _refuse(statement)
     if not isinstance(statement, exp.Select):
         raise UnsupportedSQL("Only SELECT statements are supported.")
-    _refuse(statement)
 
     # sqlglot renamed the FROM arg key between major versions; find the node
     # instead of reaching into args. Joins and subqueries are already refused,
@@ -209,27 +248,10 @@ def plan(
     if start >= end:
         raise UnsupportedSQL("Time window is empty: start is not before end.")
 
-    columns = None
-    if not any(isinstance(item, exp.Star) for item in statement.expressions):
-        columns = []
-        for item in statement.expressions:
-            target = item.this if isinstance(item, exp.Alias) else item
-            name = _column_name(target)
-            if name is None:
-                raise UnsupportedSQL(f"Cannot project expression: {item.sql()}")
-            columns.append(item.alias_or_name if isinstance(item, exp.Alias) else name)
-
-    limit = None
-    if statement.args.get("limit") is not None:
-        limit = int(statement.args["limit"].expression.this)
-
-    order_by = []
-    if statement.args.get("order") is not None:
-        for ordered in statement.args["order"].expressions:
-            name = _column_name(ordered.this)
-            if name is None:
-                raise UnsupportedSQL(f"Cannot order by: {ordered.sql()}")
-            order_by.append((name, bool(ordered.args.get("desc"))))
+    columns = _projection(statement)
+    limit = _limit_of(statement)
+    offset = _offset_of(statement)
+    order_by = _order_of(statement)
 
     return QuerySpec(
         metric=metric,
@@ -239,6 +261,7 @@ def plan(
         matchers=matchers,
         columns=columns,
         limit=limit,
+        offset=offset,
         order_by=order_by,
         mode=mode,
     )
@@ -287,7 +310,8 @@ def _translate_predicate(node: exp.Expression) -> tuple[str, object]:
 
         if name == VALUE_COLUMN:
             raise UnsupportedSQL(
-                "Filtering on value is not supported; PromQL selectors match on labels only."
+                "Filtering on value is not supported. A selector matches labels only, "
+                "so filter on value in your application."
             )
 
         if isinstance(node, exp.EQ):

@@ -60,8 +60,38 @@ def test_truncation_is_reported():
     assert len(result) == 2
 
 
+def test_ordering_sees_every_row_before_truncation():
+    """The top row must be the global maximum, not the best of an arbitrary prefix."""
+    rows = [{"host": str(index), "ts": index, "value": float(index)} for index in range(10)]
+
+    result = shape(rows, make_spec(order_by=[("value", True)], limit=2), max_rows=3)
+
+    assert [row["value"] for row in result.rows] == [9.0, 8.0]
+
+
+def test_limit_within_max_rows_is_not_truncated():
+    """A satisfied LIMIT is the whole answer, however many rows were fetched."""
+    rows = [{"host": str(index), "ts": index, "value": float(index)} for index in range(10)]
+
+    result = shape(rows, make_spec(order_by=[("value", True)], limit=2), max_rows=3)
+
+    assert result.truncated is False
+
+
 def test_untruncated_result_says_so():
     result = shape(list(ROWS), make_spec())
 
     assert result.truncated is False
     assert result.tuples()[0] == ("a", 3, 1.0)
+
+
+def test_offset_skips_rows_before_limit():
+    result = shape(list(ROWS), make_spec(order_by=[("ts", False)], limit=1, offset=1))
+
+    assert [row["ts"] for row in result.rows] == [2]
+
+
+def test_offset_past_the_end_gives_nothing():
+    result = shape(list(ROWS), make_spec(offset=99))
+
+    assert result.rows == []

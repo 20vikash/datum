@@ -99,6 +99,8 @@ def test_order_by_direction_is_captured():
         ("SELECT avg(value) FROM cpu", "Aggregate"),
         ("SELECT * FROM cpu WHERE region = 'a' OR region = 'b'", "OR"),
         ("SELECT * FROM cpu WHERE value > 80", "value"),
+        ("SELECT * FROM cpu UNION ALL SELECT * FROM mem", "UNION"),
+        ("SELECT * FROM cpu UNION SELECT * FROM mem", "UNION"),
     ],
 )
 def test_unsupported_sql_is_refused_by_name(sql, missing):

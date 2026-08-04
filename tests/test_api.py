@@ -28,6 +28,22 @@ def test_explain_returns_the_promql_without_fetching(client):
     assert response.json()["promql"] == 'system_cpu_percent{region="ap-south-1"}'
 
 
+def test_explain_reports_the_page_window(client):
+    """The shape BI tools send: the query, plus a page window appended."""
+    response = client.post(
+        "/v1/query/explain",
+        json={
+            "sql": "SELECT * FROM system_cpu_percent "
+            "WHERE region = 'ap-south-1' LIMIT 100 OFFSET 200"
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["promql"] == 'system_cpu_percent{region="ap-south-1"}'
+    assert (body["limit"], body["offset"]) == (100, 200)
+
+
 def test_refused_sql_is_a_400_not_a_500(client):
     response = client.post("/v1/query/explain", json={"sql": "SELECT avg(value) FROM cpu"})
 

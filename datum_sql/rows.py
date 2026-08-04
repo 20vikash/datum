@@ -36,15 +36,18 @@ def shape(rows: list[dict], spec: QuerySpec, max_rows: int = MAX_ROWS) -> Result
 
     Pure. You fetch the rows however you like and hand them here.
     """
-    truncated = len(rows) > max_rows
-    if truncated:
-        rows = rows[:max_rows]
-
     for column, descending in reversed(spec.order_by or []):
         rows.sort(key=lambda row: (row.get(column) is None, row.get(column)), reverse=descending)
 
+    if spec.offset:
+        rows = rows[spec.offset :]
+
     if spec.limit is not None:
         rows = rows[: spec.limit]
+
+    truncated = len(rows) > max_rows
+    if truncated:
+        rows = rows[:max_rows]
 
     columns = spec.columns or infer_columns(rows)
     if spec.columns:

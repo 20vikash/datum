@@ -285,20 +285,33 @@ PromQL cannot.
 | `WHERE region IN ('ap','us')` | `{region=~"ap\|us"}` |
 | `WHERE region REGEXP '^ap'` | `{region=~"^ap"}` |
 | `WHERE labels['region'] = 'ap'` | `{region="ap"}` (Presto style) |
-| `SELECT a, b` / `ORDER BY` / `LIMIT` | done by `shape()` on the rows you fetched |
+| `SELECT a, b` / `ORDER BY` / `LIMIT` / `OFFSET` | done by `shape()` on the rows you fetched |
+
+`ORDER BY` and `LIMIT` rank **rows**, not series. `ORDER BY value DESC LIMIT 5`
+gives the five highest samples, which may all belong to one series. That is not
+`topk(5, ...)`, which gives five series. `shape()` sorts every fetched row before
+applying the limit, so the rows you get are the right ones — but the whole window
+is fetched first, because a selector cannot rank on value.
 
 ## What it refuses
 
-PromQL gives one value per series per timestamp. It cannot put two metrics side
-by side. So anything needing a second table is refused by name, not guessed at:
+One SELECT becomes one selector. PromQL itself can combine metrics — binary
+operators match series on their labels — but that is a second query engine's job,
+so anything needing it is refused by name rather than guessed at:
 
 ```
 JOIN            -> "JOIN is not supported..."
+UNION           -> "UNION is not supported..."
 GROUP BY        -> "GROUP BY is not supported..."
 avg(), count()  -> "Aggregate functions are not supported..."
 WHERE value > 8 -> "Filtering on value is not supported..."
 OR              -> "OR is not supported. Use IN (...)"
+subquery        -> "subquery is not supported..."
 ```
+
+`LIMIT` and `OFFSET` are honoured, but they are not pushed down — PromQL has no
+`LIMIT`, so the whole window is fetched and `shape()` slices it. They bound what
+you receive, never what is read.
 
 Fetch the rows and do it in your own code, or run two queries.
 

@@ -40,6 +40,7 @@ class QuerySpec:
     mode: str = "raw"
     columns: list[str] | None = None
     limit: int | None = None
+    offset: int = 0
     order_by: list[tuple[str, bool]] = field(default_factory=list)
 
     @property
@@ -63,6 +64,7 @@ class QuerySpec:
             "mode": self.mode,
             "columns": self.columns,
             "limit": self.limit,
+            "offset": self.offset,
         }
 
 

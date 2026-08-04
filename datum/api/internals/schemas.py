@@ -94,6 +94,7 @@ class ExplainResponse(BaseModel):
     mode: str
     columns: list[str] | None
     limit: int | None
+    offset: int = 0
 
 
 class MetricList(BaseModel):
