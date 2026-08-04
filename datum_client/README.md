@@ -1,47 +1,46 @@
 # datum_client
 
-Push metrics to Datum without writing HTTP, and without inventing metric names.
+Send metrics to Datum. No HTTP code, no made-up metric names.
 
-Standard library only. It imports nothing from the Datum service, so a producer
-can install it and never pull in `sqlglot` or FastAPI.
+Standard library only. Nothing from the Datum service. No extra installs.
 
 ```python
 from datum_client import Batch, Datum
 
 datum = Datum("https://datum.internal", token=DATUM_TOKEN)
 
-system = Batch("system")
-system.gauge("load_average", 0.42, window="1m")
-
 memory = Batch("system", "memory")
 memory.gauge("used", 1154545090, "bytes")
 
-datum.send(system, memory)          # separate batches, one POST
+datum.send(memory)
 ```
 
-## What a Batch is
+## The three pieces
 
-A `Batch` collects samples that share a namespace, a subsystem and some labels.
-It is not one sample, and not necessarily one request — `send` takes as many
-batches as you like and posts them together.
+**`Datum`** — where to send, and the token. Make one, keep it.
 
-One collection tick should be one `send`. Twenty-four separate sends would be
-twenty-four chances to block that tick.
+**`Batch`** — a bag of samples that share a name prefix and some labels.
+
+**`send`** — takes any number of batches, sends them in one POST.
 
 ```
 Batch("pilot", "process", bench="bench_0001")
-  │      │         │              └─ label on every sample in this batch
-  │      │         └─ subsystem
-  │      └─ namespace
+  │       │         │            └─ label added to every sample here
+  │       │         └─ subsystem
+  │       └─ namespace
   └─ each gauge/counter/up/info call adds one sample
 
-send(batch, other_batch, ...)  ->  all their samples  ->  1 POST
+send(batch, other) -> all their samples -> 1 POST
 ```
+
+One collection tick should be one `send`. Many sends means many chances to
+block the tick.
 
 ## Naming
 
-Names are built for you, as `namespace_subsystem_target_unit_suffix`, with
-empty parts dropped:
+You pass the parts. The client joins them:
+
+`namespace_subsystem_target_unit_suffix`
 
 ```python
 batch = Batch("pilot", "process", bench="bench_0001")
@@ -53,18 +52,30 @@ batch.counter("io_read", 4096, "bytes", service="web")
 # pilot_process_io_read_bytes_total{...} 4096
 ```
 
-Because `namespace` and `subsystem` live on the batch, call sites pass only what
-varies. That does more for consistency than validation does.
+The namespace and subsystem live on the batch. Call sites only pass what
+changes. That is what keeps names the same everywhere.
 
-| Method | Suffix | Use for |
+| Method | Adds | Use for |
 |---|---|---|
-| `gauge` | none | a value that rises and falls: a percentage, a size, a depth |
-| `counter` | `_total` | a value that only climbs, so PromQL can `rate()` it |
-| `up` | `_up` | 1 alive, 0 dead — see below |
-| `info` | `_info` | always 1, carrying facts as labels |
+| `gauge` | nothing | goes up and down: a size, a percent, a queue depth |
+| `counter` | `_total` | only goes up, so PromQL can `rate()` it |
+| `up` | `_up` | 1 alive, 0 dead |
+| `info` | `_info` | always 1, facts sit in the labels |
 
-A batch has one subsystem. A record spanning several means several batches,
-handed to `send` together so it stays one request:
+Leave `target` empty when the prefix already says it all:
+
+```python
+Batch("pilot", "process").up("", True, service="web")   # pilot_process_up
+```
+
+Every method returns the batch, so you can chain:
+
+```python
+Batch("system", "memory").gauge("used", u, "bytes").gauge("free", f, "bytes")
+```
+
+One batch has one subsystem. Need more? Make more batches and send them
+together. Still one POST.
 
 ```python
 memory = Batch("system", "memory")
@@ -76,71 +87,95 @@ cpu.gauge("usage", 12.5, "percent")           # system_cpu_usage_percent
 datum.send(memory, cpu)
 ```
 
-They stay separate objects on purpose: nothing can append to another batch's
-samples by accident, and a process batch can never write into a system one.
+Batches stay separate on purpose. One can never write into another.
 
 ## Units
 
-The unit is appended to the name, the same way `prometheus_client` does it:
+The unit is glued onto the name. Same as `prometheus_client`.
 
 ```python
-memory.gauge("used", 1154545090, "bytes")     # system_memory_used_bytes
-timing.gauge("request", 0.42, "seconds")      # system_request_seconds
+memory.gauge("used", 1154545090, "bytes")   # system_memory_used_bytes
 ```
 
-It is **not validated**. Any unit string is accepted and becomes part of the
-name, so `gauge("used", 1967.64, "mb")` gives you `system_memory_used_mb`.
+**It is not checked.** Pass `"mb"` and you get `system_memory_used_mb`.
 
-Prometheus convention is base units — `bytes`, `seconds`, `ratio` (and
-`percent`, widely used) — because a scaled unit puts a hidden factor into every
-query and alert threshold that follows, and a stored name cannot be corrected
-later. Nothing enforces it. Convert at the call site:
+Use base units: `bytes`, `seconds`, `ratio`, `percent`. Do the maths yourself:
 
 ```python
 memory.gauge("used", record["used_mb"] * 1024 * 1024, "bytes")
 timing.gauge("request", elapsed_ms / 1000, "seconds")
 ```
 
-Unitless is fine when a unit would say nothing — a load average is a count of
-runnable processes, not a quantity of anything:
+Why bother? A name like `..._mb` puts a hidden ×1048576 into every query and
+every alert after it. Once data is stored you cannot fix the name.
+
+No unit is fine when a unit means nothing. A load average is not a quantity of
+anything:
 
 ```python
-batch.gauge("load_average", 0.42, window="1m")     # system_load_average
+batch.gauge("load_average", 0.42, window="1m")   # system_load_average
 ```
 
-The unit is not appended twice if the target already ends with it:
+The unit is not added twice if the target already ends with it:
 
 ```python
 batch.gauge("memory_rss", 1024, "bytes")        # pilot_process_memory_rss_bytes
 batch.gauge("memory_rss_bytes", 1024, "bytes")  # pilot_process_memory_rss_bytes
 ```
 
-Units still have to be valid *name* characters, so `MB` and `MiB` are refused
-for being uppercase, not for being scaled.
+`MB` and `MiB` are rejected. Not for being scaled — for having capitals. Names
+must be lowercase.
 
-## Labels that would kill the store
+## Labels that break the store
 
-`pid`, `container_id`, `request_id`, `trace_id` and `uuid` change constantly. As
-a label, each new value is a **new series**, permanently. A pid on eight metrics
-across every restart, service and host is how a metrics store dies.
+First, what a **series** is: the full set of labels, name included, treated as
+one identity. Change any label value and it is a different series.
+
+So one label costs you its number of different values:
+
+```
+500 samples, labels never change   ->   1 series
+500 samples, pid changes each time -> 500 series
+```
+
+Same 500 numbers. The second one is 500 times more expensive.
+
+When a process restarts, the old series is not updated. It is left behind,
+still indexed, holding a few old numbers, until retention deletes it.
+
+These labels are rejected: `pid`, `container_id`, `request_id`, `trace_id`,
+`uuid`.
 
 ```python
 batch.gauge("cpu", 1.2, "percent", pid="4412")
 # BadName: 'pid' changes constantly, so it would make a new series each time.
 #          Label by service instead, and put it on an _info metric.
 
-batch.info("", service="web", pid="4412")     # allowed here, and only here
+batch.info("", service="web", pid="4412")    # allowed here only
 # pilot_process_info{service="web",pid="4412"} 1
 ```
 
-`_info` confines the churn to one series instead of eight. It does not remove
-it — if nothing queries by pid, leaving it out is cheaper.
+**`_info` helps, it does not fix.** pid on 8 metrics means 8 new series per
+restart. On `_info` only, 1. Still grows forever: 1000 hosts × 6 services ×
+one restart a day is about 2.2 million series a year.
 
-Label names follow the metric rule: lowercase, underscores, no dots or dashes.
+What you get is that the metrics you query stay at one series per service. Your
+dashboards do not slow down. And the mess sits in one metric you can drop.
 
-## Report absence, don't omit it
+If nothing looks up pid, do not send it. A pid only matters while the process
+is alive, and the host can tell you that.
 
-A missing series is invisible on a dashboard. A zero is alertable.
+This list is only names someone thought of. `worker_pid`, `job_id`, `session`
+and `sha` get through. The real safety net is on the server:
+`-storage.maxHourlySeries`, plus `/api/v1/status/tsdb` to see which label is
+growing.
+
+Label names must be lowercase with underscores. Labels on `Batch(...)` are
+checked too, when you make it.
+
+## Say when something is missing
+
+A missing series shows nothing on a dashboard. A 0 can raise an alert.
 
 ```python
 for service, pid in targets.items():
@@ -151,11 +186,9 @@ for service, pid in targets.items():
     batch.gauge("cpu", cpu_percent(pid), "percent", service=service)
 ```
 
-Same reason a failed scrape emits `scrape_up 0` rather than nothing.
+## Text is not a number
 
-## Strings are not numbers
-
-Datum stores numbers. Encode a state as a label on a metric that is always 1:
+Datum only stores numbers. Put the text in a label, set the value to 1:
 
 ```python
 batch.gauge("state", 1, service="web", state="S")
@@ -166,53 +199,57 @@ Then `pilot_process_state{state="Z"} == 1` finds zombies.
 
 ## Timestamps
 
-Every sample needs one and Datum will not invent it — a server clock records
-arrival, not observation, which skews the moment a batch is delayed.
+Every sample needs one. Datum will not add it for you. A server clock says when
+the data arrived, not when it was measured. Those differ when things are slow.
 
-The client fills in `datetime.now(UTC)` per sample, which is producer time and
-therefore correct. Pass `ts=` to use the moment the reading was actually taken:
+The client uses `datetime.now(UTC)`. That is producer time, so it is right.
+
+Pass `ts=` when you took the reading earlier:
 
 ```python
 taken = datetime.fromisoformat(record["time"])
 batch.gauge("cpu", record["cpu_percent"], "percent", ts=taken)
 ```
 
-For one record, pass the same `ts` to every sample so they line up as one tick.
+Use the same `ts` for every sample from one reading, so they line up.
 
-Stored to millisecond precision, so a round trip loses sub-millisecond detail.
+Stored in milliseconds. Anything finer is lost.
 
 ## Sending
 
 ```python
 status = datum.send(batch)
-status = datum.send(system, memory, cpu)      # still one POST
+status = datum.send(system, memory, cpu)   # still one POST
 ```
 
-Fire and forget: one POST, a 2 second timeout, no spool and no retry. A dropped
-metric is a gap in a chart; blocking a producer to retry it is worse.
+Fire and forget. One POST, 2 second timeout, no retry, no queue on disk.
+A lost metric is a gap in a chart. Blocking the producer to retry is worse.
 
-- **`send` never raises on a network failure.** Unreachable returns `0`.
-- **It returns the HTTP status** so you can notice `401` or `422`, which are
-  bugs rather than blips. Both are logged at WARNING on the `datum` logger.
+- Network failure does **not** raise. You get `0`.
+- You get the HTTP status back. Watch for `401` and `422` — those are bugs, not
+  blips. Both are logged as warnings on the `datum` logger.
+- `ValueError` **is** raised if the batches add up to more than 10 000 samples.
+  That is your bug, caught before sending.
+- `send()` with nothing, or with empty batches, returns `0` and opens no
+  connection.
 
-Silence is the failure mode that hurts: an expired token 401s, metrics stop, and
-the config still looks right. Check the status, or make sure a dead-man's-switch
-rule covers the source.
-
-| Status | Meaning |
+| Status | What happened |
 |---|---|
-| 202 | accepted |
-| 400 | a label the token already fixes was sent in the body |
-| 401 | unknown or missing token |
-| 422 | a sample broke the contract; the body names the field and index |
+| 202 | stored |
+| 400 | you sent a label the token already sets |
+| 401 | token missing, wrong, or revoked |
+| 422 | a sample broke a rule; the reply says which field and which sample |
 | 503 | Datum is up, the store is not |
-| 0 | never landed |
+| 0 | never got there |
 
-## Identity comes from the token
+The bad case is silence. A dead token gives 401, metrics stop, and the config
+still looks fine. Check the status, or have an alert for a source going quiet.
 
-Never send `tenant_id`, `source_id`, or any label the token already fixes —
-those are refused. Datum stamps them on for you, which is what stops one host
-claiming to be another.
+## The token decides who you are
+
+Do not send `tenant_id`, `source_id`, or any label the token already sets. They
+are rejected. Datum adds them itself. That is what stops one host pretending to
+be another.
 
 ```python
 batch.gauge("cpu", 1.2, "percent", service="web")
@@ -225,13 +262,12 @@ batch.gauge("cpu", 1.2, "percent", service="web")
 
 | Limit | Value |
 |---|---|
-| samples per batch | 10 000 |
+| samples per request | 10 000 |
 | labels per sample | 30 |
 | label value length | 256 |
 | metric name length | 200 |
 
-Values must be finite: `NaN` and `Inf` are refused.
+Values must be real numbers. `NaN` and `Inf` are rejected.
 
-There is **no body size limit** yet. The 10 000 sample cap is the only thing
-bounding a request, and it is enforced after the body has been read, so a large
-one is buffered before being refused.
+There is **no limit on request size** yet. The 10 000 sample cap is all there
+is, and it is checked after the whole body is read.
