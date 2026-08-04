@@ -33,7 +33,12 @@ stores them, and consumers read them back over SQL or PromQL.
   - `planner.py` — SQL to `QuerySpec`; `_translate_predicate` is where every WHERE branch is decided
   - `rows.py` — `shape()`, `Result`; projection, ORDER BY and LIMIT over rows the caller fetched
 - `datum/` — the service.
-  - `config.py` — `Settings.from_env()`; the store URL, read from the unit's `Environment=`
+  - `config/` — every default and every generated file lives here, nothing hardcoded elsewhere
+    - `api.py` — `Settings.from_env()`; the store URL, read from the unit's `Environment=`
+    - `victoria.py` — retention, memory, the cardinality limiter
+    - `units.py` — the systemd units, and where the API listens
+    - `paths.py` — where generated files and logs go
+    - `vmauth.py` — `VmauthSettings` and the generated `-auth.config`
   - `api/app.py` — `create_app(settings, tokens)`; builds the provider once, at startup
   - `api/dependencies.py` — `Store`, `Caller`
   - `api/errors.py` — validation failures that survive being serialised
@@ -42,11 +47,13 @@ stores them, and consumers read them back over SQL or PromQL.
   - `api/internals/auth.py` — `Identity`, `TokenVerifier`; JWT signature checking
   - `api/internals/store.py` — `MetricStore`, the facade routes call
   - `api/internals/providers/` — `MetricProvider`, the registry, `VictoriaMetricsProvider`
-  - `vmauth/` — `VmauthSettings` and the generated `-auth.config`. The write path's whole
-    security boundary, so its exact text is asserted in tests
-- `bootstrap.py` — the only thing that writes config. argparse; everything it emits lands in one
-  directory. There is no env file: units carry what they need and the public key stays a file
-  both vmauth and datum-api read, so the two cannot verify against different keys.
+- `bootstrap.py` — orchestration only: parse flags, render what `config/` describes, install,
+  start. No defaults and no templates of its own. There is no env file: units carry what they
+  need and the public key stays a file both vmauth and datum-api read, so the two cannot verify
+  against different keys.
+
+The vmauth config is the write path's whole security boundary, so its exact text is asserted in
+`tests/test_vmauth_config.py` rather than its shape.
 - `tests/conftest.py` — authenticated and anonymous clients
 - `tests/test_planner.py`, `test_rows.py` — translation and row shaping
 - `tests/test_api.py`, `test_auth.py`, `test_providers.py`, `test_vmauth_config.py`

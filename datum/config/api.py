@@ -6,12 +6,12 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class Settings:
-    """How this service talks to the metrics store.
+    """How the API talks to the metrics store.
 
     No credential: the store listens on loopback, reads come through this
-    service and writes come through vmauth. The key Datum verifies callers with
-    is a different thing and lives in `DATUM_JWT_PUBLIC_KEY`, read by
-    `TokenVerifier.from_env`.
+    service and writes come through vmauth. The key callers are verified with is
+    a different thing and lives in `DATUM_JWT_PUBLIC_KEY_FILE`, read by
+    `TokenVerifier.from_env`. `bootstrap.py` sets both on the unit.
     """
 
     url: str

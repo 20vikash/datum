@@ -14,89 +14,11 @@ import sys
 from pathlib import Path
 
 from datum.api.internals.auth import PUBLIC_KEY_FILE_VARIABLE
-from datum.vmauth import VmauthSettings
-from datum.vmauth import build as build_vmauth_config
-
-REPO = Path(__file__).resolve().parent
-SERVICES = Path.home() / "services"
-SYSTEMD = Path.home() / ".config" / "systemd" / "user"
-DATA = Path.home() / ".local" / "share" / "datum" / "victoria-metrics"
-LOGS = Path.home() / ".local" / "share" / "datum" / "logs"
-
-VICTORIA_ADDRESS = "127.0.0.1:8428"
-DATUM_ADDRESS = "127.0.0.1"
-DATUM_PORT = 8000
-RETENTION = "12"
-MEMORY_PERCENT = "40"
-WORKERS = "2"
-
-# Cardinality limiter. `-1` counts new series and publishes the counters without
-# dropping anything, because over the limit VictoriaMetrics discards silently:
-# the writer still gets 204 and only vm_hourly_series_limit_rows_dropped_total
-# moves. Watch those counters, then set a real number once the normal rate is
-# known. See datum_client's README for why series churn is the thing to watch.
-HOURLY_SERIES = "-1"
-DAILY_SERIES = "-1"
-
-VmauthUnit = """[Unit]
-Description=vmauth for Datum
-After=victoria-metrics.service
-Wants=victoria-metrics.service
-
-[Service]
-Type=simple
-ExecStart={binary} \\
-  -auth.config={config} \\
-  -httpListenAddr={listen}
-StandardOutput=append:{access_log}
-StandardError=append:{error_log}
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=default.target
-"""
-
-VictoriaMetricsUnit = """[Unit]
-Description=VictoriaMetrics for Datum
-After=network.target
-
-[Service]
-Type=simple
-ExecStart={binary} \\
-  -httpListenAddr={address} \\
-  -storageDataPath={data} \\
-  -retentionPeriod={retention} \\
-  -memory.allowedPercent={memory} \\
-  -storage.maxHourlySeries={hourly} \\
-  -storage.maxDailySeries={daily}
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=default.target
-"""
-
-DatumApiUnit = """[Unit]
-Description=Datum API
-After=victoria-metrics.service
-Wants=victoria-metrics.service
-
-[Service]
-Type=simple
-WorkingDirectory={repo}
-Environment=DATUM_URL={victoria_url}
-{key_environment}ExecStart={uvicorn} datum:create_app --factory \\
-  --host {host} --port {port} --workers {workers}
-# Uvicorn puts access lines on stdout and everything else on stderr.
-StandardOutput=append:{access_log}
-StandardError=append:{error_log}
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=default.target
-"""
+from datum.config import units
+from datum.config.paths import DATA, LOGS, REPO, SERVICES, SYSTEMD, UVICORN, VMAUTH_CONFIG
+from datum.config.units import ApiSettings
+from datum.config.victoria import VictoriaSettings
+from datum.config.vmauth import VmauthSettings, build_vmauth_config
 
 
 def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
@@ -126,12 +48,15 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         help="Accept unsigned tokens. Local testing only: anyone can write as anyone.",
     )
 
-    parser.add_argument("--victoria-url", default=f"http://{VICTORIA_ADDRESS}")
-    parser.add_argument("--vmauth-listen", default="127.0.0.1:8427")
-    parser.add_argument("--datum-host", default=DATUM_ADDRESS)
-    parser.add_argument("--datum-port", type=int, default=DATUM_PORT)
-    parser.add_argument("--workers", default=WORKERS)
-    parser.add_argument("--retention", default=RETENTION, help="Months VictoriaMetrics keeps.")
+    store = VictoriaSettings()
+    api = ApiSettings()
+    parser.add_argument("--victoria-listen", default=store.listen)
+    parser.add_argument("--vmauth-listen", default=VmauthSettings.listen)
+    parser.add_argument("--datum-host", default=api.host)
+    parser.add_argument("--datum-port", type=int, default=api.port)
+    parser.add_argument("--workers", default=api.workers)
+    parser.add_argument("--retention", default=store.retention, help="Months the store keeps.")
+    parser.add_argument("--memory-percent", default=store.memory_percent)
     parser.add_argument("--config-dir", type=Path, default=SERVICES)
     parser.add_argument(
         "--dry-run",
@@ -174,7 +99,7 @@ def build_vmauth_settings(arguments: argparse.Namespace) -> VmauthSettings:
             raise RuntimeError(f"{key} is not a file. Point --public-key at Central's PEM.")
 
     settings = VmauthSettings(
-        victoria_url=arguments.victoria_url,
+        victoria_url=VictoriaSettings(listen=arguments.victoria_listen).url,
         listen=arguments.vmauth_listen,
         public_key_path=key,
         oidc_issuer=arguments.oidc_issuer or "",
@@ -253,9 +178,8 @@ def build_units(arguments: argparse.Namespace, settings: VmauthSettings) -> dict
         "It ships in the vmutils archive on the VictoriaMetrics releases page.",
         required,
     )
-    uvicorn = REPO / ".venv" / "bin" / "uvicorn"
-    if required and not uvicorn.exists():
-        raise RuntimeError(f"{uvicorn} is missing. Run `uv sync --all-groups` in {REPO} first.")
+    if required and not UVICORN.exists():
+        raise RuntimeError(f"{UVICORN} is missing. Run `uv sync --all-groups` in {REPO} first.")
 
     # Datum verifies reads against the same key vmauth verifies writes against.
     # With OIDC or skip_verify there is no file to read, so reads stay closed
@@ -264,28 +188,33 @@ def build_units(arguments: argparse.Namespace, settings: VmauthSettings) -> dict
     if settings.public_key_path is not None:
         key_environment = f"Environment={PUBLIC_KEY_FILE_VARIABLE}={settings.public_key_path}\n"
 
+    store = VictoriaSettings(
+        listen=arguments.victoria_listen,
+        retention=arguments.retention,
+        memory_percent=arguments.memory_percent,
+    )
     return {
-        "victoria-metrics": VictoriaMetricsUnit.format(
+        "victoria-metrics": units.VICTORIA_METRICS.format(
             binary=victoria,
-            address=VICTORIA_ADDRESS,
+            listen=store.listen,
             data=DATA,
-            retention=arguments.retention,
-            memory=MEMORY_PERCENT,
-            hourly=HOURLY_SERIES,
-            daily=DAILY_SERIES,
+            retention=store.retention,
+            memory=store.memory_percent,
+            hourly=store.hourly_series,
+            daily=store.daily_series,
         ),
-        "vmauth": VmauthUnit.format(
+        "vmauth": units.VMAUTH.format(
             binary=vmauth,
-            config=arguments.config_dir / "vmauth.yml",
+            config=arguments.config_dir / VMAUTH_CONFIG,
             listen=settings.listen,
             access_log=LOGS / "vmauth-access.log",
             error_log=LOGS / "vmauth-error.log",
         ),
-        "datum-api": DatumApiUnit.format(
+        "datum-api": units.DATUM_API.format(
             repo=REPO,
-            victoria_url=arguments.victoria_url,
+            victoria_url=store.url,
             key_environment=key_environment,
-            uvicorn=uvicorn,
+            uvicorn=UVICORN,
             host=arguments.datum_host,
             port=arguments.datum_port,
             workers=arguments.workers,
@@ -339,7 +268,7 @@ def main(argv: list[str] | None = None) -> None:
     units = build_units(arguments, settings)
 
     if arguments.dry_run:
-        print(f"--- {arguments.config_dir / 'vmauth.yml'} ---\n{config}")
+        print(f"--- {arguments.config_dir / VMAUTH_CONFIG} ---\n{config}")
         for name, unit in units.items():
             print(f"--- {arguments.config_dir / f'{name}.service'} ---\n{unit}")
         return
@@ -351,7 +280,7 @@ def main(argv: list[str] | None = None) -> None:
     changed = {
         name for name, unit in units.items() if install_unit(name, unit, arguments.config_dir)
     }
-    if write_once(arguments.config_dir / "vmauth.yml", config, mode=0o600):
+    if write_once(arguments.config_dir / VMAUTH_CONFIG, config, mode=0o600):
         changed.add("vmauth")
         print(f"Installed vmauth config ({settings.mode})")
 

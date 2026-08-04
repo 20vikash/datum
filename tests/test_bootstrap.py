@@ -61,3 +61,24 @@ def test_the_config_dir_is_where_vmauth_looks(key, tmp_path):
     built, _ = units("--public-key", str(key), "--config-dir", str(tmp_path))
 
     assert f"-auth.config={tmp_path / 'vmauth.yml'}" in built["vmauth"]
+
+
+def test_the_store_address_reaches_both_units(key):
+    """One flag moves VictoriaMetrics and what the API is told to call."""
+    built, _ = units("--public-key", str(key), "--victoria-listen", "127.0.0.1:9428")
+
+    assert "-httpListenAddr=127.0.0.1:9428" in built["victoria-metrics"]
+    assert "Environment=DATUM_URL=http://127.0.0.1:9428\n" in built["datum-api"]
+
+
+def test_the_store_address_reaches_vmauth(key):
+    _, settings = units("--public-key", str(key), "--victoria-listen", "127.0.0.1:9428")
+
+    assert settings.victoria_url == "http://127.0.0.1:9428"
+
+
+def test_retention_and_memory_are_not_hardcoded_in_the_unit(key):
+    built, _ = units("--public-key", str(key), "--retention", "3", "--memory-percent", "25")
+
+    assert "-retentionPeriod=3" in built["victoria-metrics"]
+    assert "-memory.allowedPercent=25" in built["victoria-metrics"]

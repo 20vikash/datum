@@ -5,7 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from datum.vmauth import VmauthSettings, build
+from datum.config import VmauthSettings
+from datum.config import build_vmauth_config as build
 
 KEY_PATH = Path("/home/frappe/services/central.pub")
 
