@@ -20,6 +20,12 @@ from datum.config.victoria import VictoriaSettings
 from datum.config.vmauth import VmauthSettings, build_vmauth_config
 
 
+def absolute_path(value: str) -> Path:
+    """Resolved at parse time: systemd has no working directory to resolve
+    against, and a relative path in the printed commands works from one place."""
+    return Path(value).expanduser().resolve()
+
+
 def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="bootstrap.py",
@@ -32,7 +38,7 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     )
     verification.add_argument(
         "--public-key",
-        type=Path,
+        type=absolute_path,
         metavar="PATH",
         help="PEM file holding Central's public key. Both services read it.",
     )
@@ -56,8 +62,9 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--workers", default=api.workers)
     parser.add_argument("--retention", default=store.retention, help="Months the store keeps.")
     parser.add_argument("--memory-percent", default=store.memory_percent)
-    parser.add_argument("--config-dir", type=Path, default=SERVICES)
-    parser.add_argument("--data-dir", type=Path, default=DATA, help="Where the store keeps data.")
+    parser.add_argument("--config-dir", type=absolute_path, default=SERVICES)
+    parser.add_argument("--data-dir", type=absolute_path, default=DATA,
+                        help="Where the store keeps data.")
     parser.add_argument(
         "--dry-run",
         action="store_true",
@@ -72,43 +79,11 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def ask_for_verification(arguments: argparse.Namespace) -> None:
-    """Fill in the verification choice when no flag gave one."""
-    if arguments.public_key or arguments.oidc_issuer or arguments.skip_verify:
-        return
-    if not sys.stdin.isatty():
-        raise RuntimeError(
-            "No verification configured. Pass --public-key, --oidc-issuer or --skip-verify."
-        )
-
-    print("How should vmauth verify the tokens producers send?")
-    print("  1. A public key file  (Central signs, you hold the public half)")
-    print("  2. OIDC discovery     (Central serves a JWKS endpoint)")
-    print("  3. Skip verification  (local testing; accepts forged tokens)")
-    match input("Choose 1, 2 or 3: ").strip():
-        case "1":
-            arguments.public_key = Path(input("Path to the PEM file: ").strip()).expanduser()
-        case "2":
-            arguments.oidc_issuer = input("Issuer URL: ").strip()
-        case "3":
-            arguments.skip_verify = True
-        case other:
-            raise RuntimeError(f"{other!r} is not one of 1, 2 or 3.")
-
-
 def build_vmauth_settings(arguments: argparse.Namespace) -> VmauthSettings:
-    """Resolve every path here, so a missing file fails before anything is written.
-
-    Absolute throughout: systemd has no working directory to resolve against,
-    and a relative path in the printed commands only works from one place.
-    """
-    arguments.config_dir = arguments.config_dir.expanduser().resolve()
-    arguments.data_dir = arguments.data_dir.expanduser().resolve()
+    """Check the key exists here, before anything is written."""
     key = arguments.public_key
-    if key is not None:
-        key = key.expanduser().resolve()
-        if not key.is_file():
-            raise RuntimeError(f"{key} is not a file. Point --public-key at Central's PEM.")
+    if key is not None and not key.is_file():
+        raise RuntimeError(f"{key} is not a file. Point --public-key at Central's PEM.")
 
     settings = VmauthSettings(
         victoria_url=VictoriaSettings(listen=arguments.victoria_listen).url,
@@ -291,7 +266,6 @@ def print_local_commands(arguments: argparse.Namespace, settings: VmauthSettings
 
 def main(argv: list[str] | None = None) -> None:
     arguments = parse_arguments(argv)
-    ask_for_verification(arguments)
     settings = build_vmauth_settings(arguments)
     config = build_vmauth_config(settings)
 

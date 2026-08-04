@@ -42,7 +42,8 @@ stores them, and consumers read them back over SQL or PromQL.
   - `api/app.py` — `create_app(settings, tokens)`; builds the provider once, at startup
   - `api/dependencies.py` — `Store`, `Caller`
   - `api/errors.py` — validation failures that survive being serialised
-  - `api/routes/v1/` — thin routes, reads only; auth is attached to the whole `/v1` mount
+  - `api/routes/` — thin routes, reads only; `/v1` and the auth gate are attached in one
+    `include_router` call, so a new route is versioned and authenticated without saying so
   - `api/internals/schemas.py` — the published wire contract
   - `api/internals/auth.py` — `Identity`, `TokenVerifier`; JWT signature checking
   - `api/internals/store.py` — `MetricStore`, the facade routes call
