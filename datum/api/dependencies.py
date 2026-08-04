@@ -7,7 +7,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from datum.api.internals import Identity, MetricStore
 
-bearer = HTTPBearer(auto_error=False, description="Token minted by Central.")
+bearer = HTTPBearer(auto_error=False, description="JWT minted by Central.")
 
 
 def get_store(request: Request) -> MetricStore:

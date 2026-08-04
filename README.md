@@ -11,16 +11,20 @@ Three parts:
 | `datum_client` | the thing producers import to push | Pilot, agents |
 | `datum_sql` | turns SQL into PromQL | the service, and Insights |
 
-VictoriaMetrics does the storing. Nothing sits between the service and it — no
-queue, no worker.
+VictoriaMetrics does the storing. Nothing queues or buffers on the way in —
+vmauth checks the token and passes the bytes straight through.
 
 ```
-producers --POST /v1/ingest--> datum --> VictoriaMetrics
- (JSON)                          ^
-collectors -POST /v1/write ------|
- (remote write)                  |
-                    readers --POST /v1/query
+producers  --POST /api/v1/import--┐
+ (JSON)                           ├--> vmauth --> VictoriaMetrics
+collectors --POST /api/v1/write---┘      (JWT)         ^
+ (remote write)                                        |
+                          readers --POST /v1/query--> datum
 ```
+
+Writes never touch Python. vmauth verifies the JWT and proxies straight to
+VictoriaMetrics, which stamps identity from the token's claim. Datum serves
+reads only.
 
 ---
 
@@ -33,102 +37,82 @@ break a health check.
 
 | Method | Path | Works? |
 |---|---|---|
-| `POST` | `/v1/ingest` | **yes** — JSON |
-| `POST` | `/v1/write` | **yes** — Prometheus remote write 1.0 |
+| `POST` | `/v1/query` | **yes** — SQL in, rows out |
 | `POST` | `/v1/query/explain` | **yes** — pure translation, never touches the store |
-| `POST` | `/v1/query` | no — 501, reading is not written yet |
-| `GET` | `/v1/metrics` | no — 501 |
-| `GET` | `/v1/metrics/{metric}/columns` | no — 501 |
+| `GET` | `/v1/metrics` | **yes** |
+| `GET` | `/v1/metrics/{metric}/columns` | **yes** |
 | `GET` | `/health` | **yes** |
+
+There is no write endpoint here. Producers go to vmauth.
 
 Browse them at `/docs`. Raw schema at `/v1/openapi.json`.
 
 ## Sending data
 
+Producers talk to **vmauth**, not to this service. It listens on `:8427`, checks
+the JWT, and hands the body to VictoriaMetrics unchanged.
+
+JSON, which is what `datum_client` sends:
+
 ```bash
-curl -X POST http://localhost:8000/v1/ingest \
-  -H "Authorization: Bearer YOUR_TOKEN" \
+curl -X POST http://localhost:8427/api/v1/import \
+  -H "Authorization: Bearer YOUR_JWT" \
   -H "Content-Type: application/json" \
-  -d '{"samples":[
-        {"metric":"system_cpu_percent","value":12.5,
-         "ts":"2026-08-04T09:00:00Z","labels":{"host":"a"}}
-      ]}'
+  -d '{"metric":{"__name__":"system_cpu_percent","host":"a"},
+       "values":[12.5],"timestamps":[1785857020273]}'
 ```
 
-Reply: `{"accepted": 1}` with status 202.
-
-Rules for a sample:
-
-- `metric` — lowercase, underscores. No dots. Required.
-- `value` — a real number. `NaN` and `Inf` are rejected. Required.
-- `ts` — RFC 3339. **Required.** Datum will not guess it for you.
-- `labels` — optional. Up to 30.
-
-Anything else in the body is rejected. Better to fail loudly than store junk.
-
-## Sending data from Prometheus or vmagent
-
-`/v1/write` speaks Prometheus remote write 1.0: a snappy-compressed
-`prometheus.WriteRequest`. Point any collector that speaks it here.
+Prometheus remote write, which is what vmagent sends:
 
 ```yaml
 remote_write:
-  - url: http://localhost:8000/v1/write
+  - url: http://localhost:8427/api/v1/write
     authorization:
-      credentials: YOUR_TOKEN
+      credentials: YOUR_JWT
 ```
 
-Same rules as `/v1/ingest`, because it is the same code past the decoder. The
-metric name arrives as the `__name__` label and is pulled out for you.
+Both answer `204`. Only those two paths are proxied — a write token that tries
+`/api/v1/query` gets a `400`, so it can never read another tenant's series.
 
-- Success is `204`, which is what senders expect.
-- One bad series rejects the whole batch with `400`. Nothing is half-written.
-- A `400` is the sender's to fix, so retrying it will not help.
-- Exemplars, native histograms and metadata are ignored. Datum stores numbers.
-- Remote write 2.0 is refused by name rather than mis-parsed.
-
-Watch out for `external_labels` that collide with the labels your token already
-fixes: that is a `400`, not a silent override. See below.
-
-`remote.proto` carries only the fields Datum stores. Exemplars, native histograms
-and metadata are left out on purpose — protobuf keeps them as unknown fields and
-skips them. Regenerate `remote_pb2.py` after editing it:
-
-```bash
-uv run --with grpcio-tools python -m grpc_tools.protoc \
-  -I datum/api/internals/remote_write \
-  --python_out=datum/api/internals/remote_write remote.proto
-```
+**Datum no longer validates samples.** VictoriaMetrics accepts what it is given,
+so a metric name with a dot in it is now stored rather than refused. Identity is
+still enforced, because the token's labels overwrite whatever the body claimed.
 
 ## Tokens
 
-Every `/v1` call needs `Authorization: Bearer <token>`.
+Every call carries a JWT that Central signed: `Authorization: Bearer <jwt>`.
 
-Datum keeps only `sha256(token)`. Each token maps to an identity: a tenant, a
-source, and some fixed labels.
+Identity lives in the `vm_access` claim:
 
-Datum adds that identity to every sample you send:
-
-```
-you send:    system_cpu_percent{host="a"}
-gets stored: system_cpu_percent{host="a", tenant_id="acme",
-                                source_id="pilot_1", region="ap_south_1"}
+```json
+{"vm_access": {"metrics_extra_labels": ["tenant_id=acme", "source_id=pilot_1"]}}
 ```
 
-So do **not** send `tenant_id`, `source_id`, or any label your token already
-sets. Those come back as 400. That is what stops one host pretending to be
-another.
+vmauth turns those into `extra_label` query args and VictoriaMetrics applies
+them **over** whatever the body carried:
+
+```
+you send:    system_cpu_percent{host="a", tenant_id="someone_else"}
+gets stored: system_cpu_percent{host="a", tenant_id="acme", source_id="pilot_1"}
+```
+
+A spoofed label loses rather than being refused. That is the one behaviour that
+changed with vmauth: it overrides silently instead of answering 400.
+
+Datum verifies the same JWT with the same key for reads, so one token works for
+both. Signatures are RSA or ECDSA — vmauth does not accept HMAC, so neither does
+Datum.
 
 ## What each status means
 
-| Status | Meaning |
-|---|---|
-| 202 | stored |
-| 400 | you sent a label the token already sets |
-| 401 | token missing, wrong, or revoked |
-| 422 | a sample broke a rule; the reply says which field and which sample |
-| 501 | that part is not written yet |
-| 503 | Datum is up, VictoriaMetrics is not |
+| Status | Where | Meaning |
+|---|---|---|
+| 204 | vmauth | stored |
+| 400 | datum | the SQL asks for something one PromQL query cannot do |
+| 400 | vmauth | that path is not proxied; only writes are |
+| 401 | both | JWT missing, unsigned, expired, or signed by the wrong key |
+| 422 | datum | the request body broke the schema |
+| 503 | datum | Datum is up, VictoriaMetrics is not |
 
 ## Running it locally
 
@@ -148,19 +132,13 @@ Make a `.env` file. It is not in the repo — it holds secrets:
 
 ```
 DATUM_URL=http://127.0.0.1:8428
-DATUM_BACKEND=victoriametrics
-DATUM_TOKENS='{"a-secret":{"tenant":"acme","source":"pilot_1","labels":{"region":"ap_south_1"}}}'
+DATUM_JWT_PUBLIC_KEY="-----BEGIN PUBLIC KEY-----
+...Central's public key...
+-----END PUBLIC KEY-----"
 ```
 
-Single quotes around the JSON matter. Without them `source .env` eats the
-quotes inside. Bad JSON stops the service at startup — it never runs with an
-empty token list by accident.
-
-Make a token with:
-
-```bash
-python3 -c "import secrets; print(secrets.token_urlsafe(32))"
-```
+Unset means every call is a 401 — the service never starts up accepting
+everyone by accident.
 
 Then run it:
 
@@ -172,8 +150,10 @@ uv run uvicorn "datum:create_app" --factory --reload --env-file .env
 | Variable | Default | What it does |
 |---|---|---|
 | `DATUM_URL` | required | where VictoriaMetrics is |
-| `DATUM_BACKEND` | `victoriametrics` | which storage provider to use |
-| `DATUM_TOKENS` | none | who may push. Unset means every call is a 401 |
+| `DATUM_JWT_PUBLIC_KEY` | none | Central's public key. Unset means every call is a 401 |
+| `DATUM_OIDC_ISSUER` | none | fetch keys from `{issuer}/.well-known/openid-configuration` instead |
+| `DATUM_JWT_SKIP_VERIFY` | `0` | `1` accepts unverified tokens. Local testing only |
+| `DATUM_VMAUTH_LISTEN` | `127.0.0.1:8427` | where producers write |
 | `DATUM_DIALECT` | `mysql` | SQL flavour the translator reads |
 | `DATUM_MODE` | `raw` | `raw` or `step` |
 | `DATUM_IGNORE_PAGINATION` | `1` | drop `LIMIT`/`OFFSET` sent by BI tools. `0` honours them |
@@ -193,13 +173,14 @@ chmod 600 ~/services/datum.env
 .venv/bin/python bootstrap.py
 ```
 
-You get two services:
+You get three services — `victoria-metrics`, `vmauth` and `datum-api`:
 
 ```
 ~/services/                     the unit files and datum.env live here
 ~/.config/systemd/user/         symlinks, because that is where systemd looks
 ~/.local/share/datum/           the metrics data
-~/.local/share/datum/logs/      access.log and error.log
+~/services/vmauth.yml           generated; edit the environment, not this
+~/.local/share/datum/logs/      access.log, error.log, vmauth-*.log
 ```
 
 ```bash
@@ -214,9 +195,14 @@ rotates them — add a logrotate rule before they matter.
 Run it twice and nothing happens — it only restarts a service whose unit
 actually changed.
 
-Two things it does not do: install VictoriaMetrics (it checks your PATH and
-tells you where to get it), and write `datum.env` (that is yours, it holds
-tokens).
+Two things it does not do: install VictoriaMetrics or vmauth (it checks your
+PATH and tells you where to get them), and write `datum.env` (that is yours, it
+holds the key).
+
+`vmauth.yml` is generated from the environment on every run, so moving from a
+pasted public key to OIDC is a variable change and a restart. Setting more than
+one of `DATUM_JWT_PUBLIC_KEY`, `DATUM_OIDC_ISSUER` and `DATUM_JWT_SKIP_VERIFY`
+is a startup failure rather than a silent pick.
 
 **No HTTPS.** Tokens travel in plain text. Fine on loopback or a private
 network. Put a TLS proxy in front before real hosts push to it.
@@ -227,7 +213,7 @@ VictoriaMetrics is the only one that ships. But it plugs in through one small
 interface, so adding another is a new file, not a rewrite.
 
 ```python
-from datum.api.internals.providers import PROVIDERS, MetricProvider
+from datum.api.internals.providers import MetricProvider
 
 
 class ClickHouseProvider(MetricProvider):
@@ -235,7 +221,6 @@ class ClickHouseProvider(MetricProvider):
 
     def __init__(self, url, **options): ...
 
-    def write(self, samples) -> int: ...
     def fetch(self, spec) -> list[dict]: ...
 
     @property
@@ -244,15 +229,15 @@ class ClickHouseProvider(MetricProvider):
     def get_labels(self, metric) -> list[str]: ...
     def get_label_values(self, metric, label) -> list[str]: ...
 
-
-PROVIDERS["clickhouse"] = ClickHouseProvider
 ```
 
-Pick it with `DATUM_BACKEND=clickhouse`.
+`app.py` builds it directly — there is no backend registry, because
+VictoriaMetrics is the only one that ships. A second engine is a new file here
+and one changed line there.
 
 Two rules:
 
-- **A provider stores and fetches. It never reads SQL.** `fetch` gets a plan
+- **A provider fetches. It never reads SQL, and it never writes.** `fetch` gets a plan
   that `datum_sql` already made. A provider that starts parsing SQL is a second
   query engine, which is the thing this seam exists to stop.
 - **Nothing outside `providers/` knows which one is running.** If some other

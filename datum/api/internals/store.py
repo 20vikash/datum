@@ -1,16 +1,14 @@
 from __future__ import annotations
 
-from datum.api.internals.auth import Identity
 from datum.api.internals.providers import MetricProvider
-from datum.api.internals.schemas import Sample
 from datum_sql import QuerySpec, Result, plan, shape
 
 
 class MetricStore:
     """The store as the service uses it, backed by one `MetricProvider`.
 
-    Owns the SQL to PromQL step and the identity stamp so routes do not. The
-    provider below only stores and retrieves.
+    Read only. Owns the SQL to PromQL step so routes do not; the provider below
+    only retrieves. Writes never reach this service -- producers go to vmauth.
     """
 
     def __init__(
@@ -24,15 +22,6 @@ class MetricStore:
         self.dialect = dialect
         self.mode = mode
         self.ignore_pagination = ignore_pagination
-
-    def ingest(self, samples: list[Sample], identity: Identity) -> int:
-        """Stamp the caller onto every sample, then hand off. Returns how many landed."""
-        return self.provider.write(
-            [
-                sample.model_copy(update={"labels": identity.stamp(sample.labels)})
-                for sample in samples
-            ]
-        )
 
     def query(self, sql: str, dialect: str | None = None, mode: str | None = None) -> Result:
         """Translate, fetch, then apply what PromQL cannot express."""

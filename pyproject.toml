@@ -13,11 +13,9 @@ arrow = ["pyarrow>=15"]
 [dependency-groups]
 api = [
     "fastapi>=0.115",
-    # remote_pb2.py is generated gencode and refuses an older runtime than the
-    # protoc that wrote it. Regenerate it if this floor moves.
-    "protobuf>=7.35.1",
-    # 0.7 dropped libsnappy for cramjam, so there is no C toolchain to install.
-    "python-snappy>=0.7",
+    # [crypto] pulls cryptography, which PyJWT needs for the RSA and ECDSA
+    # algorithms. vmauth verifies with those only, so HMAC is never accepted.
+    "pyjwt[crypto]>=2.9",
     "uvicorn>=0.30",
 ]
 dev = [
@@ -38,7 +36,6 @@ packages = ["datum", "datum_client", "datum_sql"]
 
 [tool.ruff]
 line-length = 100
-extend-exclude = ["*_pb2.py"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

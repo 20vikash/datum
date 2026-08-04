@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from datum.api import errors
-from datum.api.internals import MetricStore, TokenStore, get_provider
+from datum.api.internals import MetricStore, TokenVerifier, VictoriaMetricsProvider
 from datum.api.routes import router
 from datum.config import Settings
 
@@ -13,7 +13,6 @@ TITLE = "datum"
 VERSION = "0.1.0"
 
 TAGS = [
-    {"name": "ingest", "description": "Producers push numbers. Identity comes from the token."},
     {"name": "query", "description": "Read numbers back with SQL. One SELECT, one PromQL query."},
 ]
 
@@ -21,7 +20,7 @@ TAGS = [
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings: Settings = app.state.settings
-    provider = get_provider(settings.backend, url=settings.url)
+    provider = VictoriaMetricsProvider(url=settings.url)
     app.state.store = MetricStore(
         provider,
         dialect=settings.dialect,
@@ -32,11 +31,11 @@ async def lifespan(app: FastAPI):
     app.state.store = None
 
 
-def create_app(settings: Settings | None = None, tokens: TokenStore | None = None) -> FastAPI:
+def create_app(settings: Settings | None = None, tokens: TokenVerifier | None = None) -> FastAPI:
     """Build the `datum-api` application.
 
-    `tokens` defaults to whatever `DATUM_TOKENS` holds. With none set, every
-    /v1 call is a 401.
+    `tokens` defaults to the public key in `DATUM_JWT_PUBLIC_KEY`. With none
+    set, every /v1 call is a 401.
     """
     app = FastAPI(
         title=TITLE,
@@ -48,7 +47,7 @@ def create_app(settings: Settings | None = None, tokens: TokenStore | None = Non
         lifespan=lifespan,
     )
     app.state.settings = settings or Settings.from_env()
-    app.state.tokens = tokens or TokenStore.from_env()
+    app.state.tokens = tokens or TokenVerifier.from_env()
     app.state.store = None
     errors.install(app)
     app.include_router(router)

@@ -57,11 +57,16 @@ def test_malformed_body_is_a_422(client):
     assert response.status_code == 422
 
 
-def test_ingest_accepts_a_batch(client):
-    response = client.post("/v1/ingest", json={"samples": [{"metric": "cpu", "value": 1.0, "ts": "2026-08-04T12:00:00Z"}]})
+def test_only_read_routes_are_published(client):
+    """The write path lives in vmauth, so it must not appear in the schema."""
+    paths = client.get("/v1/openapi.json").json()["paths"]
 
-    assert response.status_code == 202
-    assert response.json() == {"accepted": 1}
+    assert sorted(paths) == [
+        "/v1/metrics",
+        "/v1/metrics/{metric}/columns",
+        "/v1/query",
+        "/v1/query/explain",
+    ]
 
 
 def test_query_shapes_what_the_provider_returns(client):

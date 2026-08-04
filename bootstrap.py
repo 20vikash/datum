@@ -6,12 +6,16 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from datum.vmauth import VmauthSettings
+from datum.vmauth import build as build_vmauth_config
+
 REPO = Path(__file__).resolve().parent
 SERVICES = Path.home() / "services"
 SYSTEMD = Path.home() / ".config" / "systemd" / "user"
 DATA = Path.home() / ".local" / "share" / "datum" / "victoria-metrics"
 LOGS = Path.home() / ".local" / "share" / "datum" / "logs"
 ENV_FILE = SERVICES / "datum.env"
+VMAUTH_CONFIG = SERVICES / "vmauth.yml"
 
 VICTORIA_ADDRESS = "127.0.0.1:8428"
 DATUM_ADDRESS = "127.0.0.1"
@@ -27,6 +31,25 @@ WORKERS = "2"
 # known. See datum_client's README for why series churn is the thing to watch.
 HOURLY_SERIES = "-1"
 DAILY_SERIES = "-1"
+
+VmauthUnit = """[Unit]
+Description=vmauth for Datum
+After=victoria-metrics.service
+Wants=victoria-metrics.service
+
+[Service]
+Type=simple
+ExecStart={binary} \\
+  -auth.config={config} \\
+  -httpListenAddr={listen}
+StandardOutput=append:{access_log}
+StandardError=append:{error_log}
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+"""
 
 VictoriaMetricsUnit = """[Unit]
 Description=VictoriaMetrics for Datum
@@ -121,17 +144,41 @@ def require_env_file() -> None:
     """The env file holds tokens, so it is yours to write. Fail here, not at systemd start."""
     if not ENV_FILE.exists():
         raise RuntimeError(
-            f"{ENV_FILE} is missing. Create it with DATUM_URL and DATUM_TOKENS, "
+            f"{ENV_FILE} is missing. Create it with DATUM_URL and DATUM_JWT_PUBLIC_KEY, "
             "then chmod 600 it and run this again."
         )
     if ENV_FILE.stat().st_mode & 0o077:
         raise RuntimeError(f"{ENV_FILE} is readable by others. Run: chmod 600 {ENV_FILE}")
 
 
-def build_units() -> dict[str, str]:
+def install_vmauth_config(settings: VmauthSettings) -> bool:
+    """Write vmauth's auth config. Returns whether it changed.
+
+    Generated rather than hand-kept, so moving from a pasted public key to OIDC
+    is an environment change and the write path never drifts from the read path.
+    """
+    SERVICES.mkdir(parents=True, exist_ok=True)
+    config = build_vmauth_config(settings)
+    changed = not VMAUTH_CONFIG.exists() or VMAUTH_CONFIG.read_text() != config
+    if changed:
+        VMAUTH_CONFIG.write_text(config)
+    VMAUTH_CONFIG.chmod(0o600)
+
+    print(f"{'Installed' if changed else 'Unchanged'} vmauth config ({settings.mode})")
+    if not settings.is_verifying:
+        print("  WARNING: skip_verify is on. Signatures are not checked; anyone")
+        print("  who reaches this port can write as any tenant.")
+    return changed
+
+
+def build_units(vmauth_settings: VmauthSettings) -> dict[str, str]:
     victoria = find_binary(
         "victoria-metrics",
         "Install it from https://github.com/VictoriaMetrics/VictoriaMetrics/releases",
+    )
+    vmauth = find_binary(
+        "vmauth",
+        "It ships in the vmutils archive on the VictoriaMetrics releases page.",
     )
     uvicorn = REPO / ".venv" / "bin" / "uvicorn"
     if not uvicorn.exists():
@@ -146,6 +193,13 @@ def build_units() -> dict[str, str]:
             memory=MEMORY_PERCENT,
             hourly=HOURLY_SERIES,
             daily=DAILY_SERIES,
+        ),
+        "vmauth": VmauthUnit.format(
+            binary=vmauth,
+            config=VMAUTH_CONFIG,
+            listen=vmauth_settings.listen,
+            access_log=LOGS / "vmauth-access.log",
+            error_log=LOGS / "vmauth-error.log",
         ),
         "datum-api": DatumApiUnit.format(
             repo=REPO,
@@ -189,14 +243,18 @@ def main() -> None:
     # systemd will not create the directory an `append:` path lives in.
     LOGS.mkdir(parents=True, exist_ok=True)
     require_env_file()
-    units = build_units()
+    vmauth_settings = VmauthSettings.from_env()
+    units = build_units(vmauth_settings)
 
     changed = {name for name, unit in units.items() if install_unit(name, unit)}
+    if install_vmauth_config(vmauth_settings):
+        changed.add("vmauth")
 
     enable_linger()
     start(list(units), changed)
 
-    print(f"\nDatum is on http://{DATUM_ADDRESS}:{DATUM_PORT}, VictoriaMetrics on loopback only.")
+    print(f"\nReads: http://{DATUM_ADDRESS}:{DATUM_PORT}. Writes: vmauth on {vmauth_settings.listen}.")
+    print("VictoriaMetrics stays on loopback; nothing reaches it directly.")
     print(f"After editing {ENV_FILE}: systemctl --user restart datum-api")
     print(f"Logs: {LOGS}/access.log and error.log")
 

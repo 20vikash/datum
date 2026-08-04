@@ -1,30 +1,24 @@
-import json
-
-import pytest
-
-from datum.api.internals import Identity, TokenStore
-from datum.api.internals.auth import TOKENS_VARIABLE
-
-RECORD = {"tenant": "acme", "source": "pilot_1", "labels": {"region": "ap_south_1"}}
+from datum.api.internals import TokenVerifier
+from datum.api.internals.auth import PUBLIC_KEY_VARIABLE
+from tests.conftest import PUBLIC_KEY, TOKEN
 
 
-def test_tokens_load_from_the_environment(monkeypatch):
-    monkeypatch.setenv(TOKENS_VARIABLE, json.dumps({"secret": RECORD, "other": RECORD}))
+def test_the_key_loads_from_the_environment(monkeypatch):
+    monkeypatch.setenv(PUBLIC_KEY_VARIABLE, PUBLIC_KEY)
 
-    store = TokenStore.from_env()
+    verifier = TokenVerifier.from_env()
 
-    assert store.count == 2
-    assert store.resolve("secret") == Identity(**RECORD)
-
-
-def test_unset_means_no_tokens(monkeypatch):
-    monkeypatch.delenv(TOKENS_VARIABLE, raising=False)
-
-    assert TokenStore.from_env().count == 0
+    assert verifier.is_configured
+    assert verifier.resolve(TOKEN) is not None
 
 
-def test_malformed_fails_at_startup_rather_than_silently_empty(monkeypatch):
-    monkeypatch.setenv(TOKENS_VARIABLE, "{not json")
+def test_unset_means_no_key(monkeypatch):
+    monkeypatch.delenv(PUBLIC_KEY_VARIABLE, raising=False)
 
-    with pytest.raises(RuntimeError, match="malformed"):
-        TokenStore.from_env()
+    assert TokenVerifier.from_env().is_configured is False
+
+
+def test_whitespace_is_not_a_key(monkeypatch):
+    monkeypatch.setenv(PUBLIC_KEY_VARIABLE, "   \n  ")
+
+    assert TokenVerifier.from_env().is_configured is False

@@ -1,32 +1,61 @@
-import pytest
+import time
 
-from datum.api.internals import Identity, LabelConflict, TokenStore
-from tests.conftest import IDENTITY, TOKEN
+from datum.api.internals import Identity, TokenVerifier
+from tests.conftest import IDENTITY, PUBLIC_KEY, TOKEN, mint
 
 
-def test_a_token_resolves_to_its_identity(tokens):
+def test_a_signed_token_resolves_to_its_identity(tokens):
     assert tokens.resolve(TOKEN) == IDENTITY
 
 
-def test_an_unknown_token_resolves_to_nothing(tokens):
-    assert tokens.resolve("not-a-token") is None
+def test_a_token_signed_by_someone_else_is_refused(tokens):
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    other = rsa.generate_private_key(public_exponent=65537, key_size=2048).private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    ).decode()
+
+    assert tokens.resolve(mint(key=other)) is None
 
 
-def test_revoking_takes_effect_immediately(tokens):
-    tokens.revoke(TOKEN)
+def test_a_tampered_signature_is_refused(tokens):
+    tampered = TOKEN[:-1] + ("A" if TOKEN[-1] != "A" else "B")
 
-    assert tokens.resolve(TOKEN) is None
+    assert tokens.resolve(tampered) is None
 
 
-def test_tokens_are_never_held_in_the_clear():
-    store = TokenStore({TOKEN: IDENTITY})
+def test_an_expired_token_is_refused(tokens):
+    stale = mint({"exp": int(time.time()) - 60, "vm_access": {}})
 
-    assert TOKEN not in repr(store.__dict__)
-    assert TokenStore.digest(TOKEN) in store.__dict__["_by_hash"]
+    assert tokens.resolve(stale) is None
+
+
+def test_nonsense_is_refused_rather_than_raised(tokens):
+    assert tokens.resolve("not-a-jwt") is None
+
+
+def test_without_a_key_nothing_resolves():
+    assert TokenVerifier().resolve(TOKEN) is None
+
+
+def test_labels_come_from_the_access_claim():
+    identity = Identity.from_claims(
+        {"vm_access": {"metrics_extra_labels": ["tenant_id=acme", "region=blr"]}}
+    )
+
+    assert identity.labels == {"tenant_id": "acme", "region": "blr"}
+
+
+def test_a_claim_without_labels_is_an_empty_identity():
+    assert Identity.from_claims({"vm_access": {}}).labels == {}
+    assert Identity.from_claims({}).labels == {}
 
 
 def test_v1_refuses_an_anonymous_caller(anonymous):
-    response = anonymous.post("/v1/ingest", json={"samples": []})
+    response = anonymous.post("/v1/query", json={"sql": "SELECT * FROM cpu"})
 
     assert response.status_code == 401
     assert response.headers["www-authenticate"] == "Bearer"
@@ -44,65 +73,17 @@ def test_health_stays_open(anonymous):
 
 def test_auth_runs_before_validation(anonymous):
     """A bad body from a stranger is a 401, never a 422 describing our schema."""
-    response = anonymous.post("/v1/ingest", json={"nonsense": True})
+    response = anonymous.post("/v1/query", json={"nonsense": True})
 
     assert response.status_code == 401
 
 
-def test_the_token_stamps_identity_onto_every_sample(client, tokens):
-    provider = client.app.state.store.provider
-    written = []
-    provider.write = lambda samples: written.extend(samples) or len(samples)
-
-    client.post("/v1/ingest", json={"samples": [{"metric": "cpu", "value": 1.0, "ts": "2026-08-04T12:00:00Z"}]})
-
-    assert written[0].labels == {
-        "region": "ap_south_1",
-        "tenant_id": "acme",
-        "source_id": "pilot_1",
-    }
+def test_writing_is_not_served_here(client):
+    """Producers go to vmauth. Nothing in this service accepts samples."""
+    assert client.post("/v1/ingest", json={"samples": []}).status_code == 404
+    assert client.post("/v1/write", content=b"").status_code == 404
 
 
-def test_claiming_a_label_the_token_fixes_is_refused(client):
-    response = client.post(
-        "/v1/ingest",
-        json={
-            "samples": [
-                {
-                    "metric": "cpu",
-                    "value": 1.0,
-                    "ts": "2026-08-04T12:00:00Z",
-                    "labels": {"region": "elsewhere"},
-                }
-            ]
-        },
-    )
-
-    assert response.status_code == 400
-    assert "region" in response.json()["detail"]
-
-
-def test_an_identity_carries_no_labels_by_default():
-    assert Identity(tenant="t", source="s").labels == {}
-
-
-def test_stamp_adds_tenant_and_source():
-    identity = Identity(tenant="acme", source="pilot_1")
-
-    assert identity.stamp({"disk": "sda"}) == {
-        "disk": "sda",
-        "tenant_id": "acme",
-        "source_id": "pilot_1",
-    }
-
-
-def test_stamp_keeps_labels_the_token_does_not_fix():
-    stamped = IDENTITY.stamp({"disk": "sda"})
-
-    assert stamped["disk"] == "sda"
-    assert stamped["region"] == "ap_south_1"
-
-
-def test_stamp_refuses_a_claimed_label():
-    with pytest.raises(LabelConflict, match="region"):
-        IDENTITY.stamp({"region": "elsewhere"})
+def test_the_public_key_is_what_gates_access():
+    assert TokenVerifier(PUBLIC_KEY).is_configured is True
+    assert TokenVerifier().is_configured is False

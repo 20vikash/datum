@@ -1,84 +1,63 @@
 from __future__ import annotations
 
-import hashlib
-import json
 import os
 from dataclasses import dataclass, field
 
-TOKENS_VARIABLE = "DATUM_TOKENS"
+import jwt
 
-
-class LabelConflict(ValueError):
-    """A producer sent a label its own token already fixes."""
+PUBLIC_KEY_VARIABLE = "DATUM_JWT_PUBLIC_KEY"
+ACCESS_CLAIM = "vm_access"
+LABELS_CLAIM = "metrics_extra_labels"
+ALGORITHMS = ["RS256", "RS384", "RS512", "ES256", "ES384", "ES512"]
 
 
 @dataclass(frozen=True)
 class Identity:
     """Who a token says the caller is.
 
-    `labels` are the producer's fixed labels. Nothing here ever comes from a
-    request body.
+    Read side only. Writes go to vmauth, which stamps these same labels from
+    the same claim before VictoriaMetrics sees the samples.
     """
 
-    tenant: str
-    source: str
     labels: dict[str, str] = field(default_factory=dict)
 
-    def stamp(self, labels: dict[str, str]) -> dict[str, str]:
-        """Fixed labels win. Claiming one is a refusal, not a silent override."""
-        claimed = labels.keys() & self.labels.keys()
-        if claimed:
-            raise LabelConflict(f"{sorted(claimed)} come from the token, not the body")
-        return {**labels, **self.labels, "tenant_id": self.tenant, "source_id": self.source}
+    @classmethod
+    def from_claims(cls, claims: dict) -> Identity:
+        """`vm_access.metrics_extra_labels` is a list of `name=value` strings."""
+        labels = {}
+        for entry in claims.get(ACCESS_CLAIM, {}).get(LABELS_CLAIM, []):
+            name, _, value = str(entry).partition("=")
+            if value:
+                labels[name] = value
+        return cls(labels=labels)
 
 
-class TokenStore:
-    """sha256(token) to Identity. Central mints them; Datum only ever checks.
+class TokenVerifier:
+    """Verifies the JWTs Central mints, against its public key.
 
-    POC. Held in memory, so it does not survive a restart, and there is no
-    Central sync or expiry yet: it is whatever `create_app` was handed. Real
-    tokens are expected to be JWTs verified against Central's JWKS, which
-    replaces this class rather than extending it -- everything downstream only
-    needs `resolve(token) -> Identity | None`.
+    The same key vmauth is configured with, so a token that can write can also
+    read. HMAC is deliberately absent: vmauth verifies with RSA or ECDSA only,
+    and the two must not disagree about what a valid token is.
     """
 
-    def __init__(self, tokens: dict[str, Identity] | None = None):
-        self._by_hash: dict[str, Identity] = {}
-        for token, identity in (tokens or {}).items():
-            self.add(token, identity)
+    def __init__(self, public_key: str | None = None):
+        self.public_key = (public_key or "").strip()
 
     @classmethod
-    def from_env(cls) -> TokenStore:
-        """Read `DATUM_TOKENS`: a JSON object of accepted token to identity.
-
-            {"secret": {"tenant": "acme", "source": "pilot_1", "labels": {"region": "ap"}}}
-
-        Unset means no tokens, so every /v1 call is a 401. Malformed is a
-        startup failure, never a silently empty store.
-        """
-        raw = os.environ.get(TOKENS_VARIABLE)
-        if not raw or not raw.strip():
-            return cls()
-
-        try:
-            entries = json.loads(raw)
-            return cls({token: Identity(**record) for token, record in entries.items()})
-        except (json.JSONDecodeError, AttributeError, TypeError) as malformed:
-            raise RuntimeError(f"{TOKENS_VARIABLE} is malformed: {malformed}") from malformed
-
-    def add(self, token: str, identity: Identity) -> None:
-        self._by_hash[self.digest(token)] = identity
-
-    def revoke(self, token: str) -> None:
-        self._by_hash.pop(self.digest(token), None)
-
-    def resolve(self, token: str) -> Identity | None:
-        return self._by_hash.get(self.digest(token))
+    def from_env(cls) -> TokenVerifier:
+        """Read `DATUM_JWT_PUBLIC_KEY`. Unset means every /v1 call is a 401."""
+        return cls(os.environ.get(PUBLIC_KEY_VARIABLE))
 
     @property
-    def count(self) -> int:
-        return len(self._by_hash)
+    def is_configured(self) -> bool:
+        return bool(self.public_key)
 
-    @staticmethod
-    def digest(token: str) -> str:
-        return hashlib.sha256(token.encode()).hexdigest()
+    def resolve(self, token: str) -> Identity | None:
+        """The identity a valid token carries, or None. Never raises."""
+        if not self.is_configured:
+            return None
+        try:
+            claims = jwt.decode(token, self.public_key, algorithms=ALGORITHMS)
+        except jwt.InvalidTokenError:
+            return None
+        return Identity.from_claims(claims)

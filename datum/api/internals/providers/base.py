@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import ClassVar
 
-from datum.api.internals.schemas import Sample
 from datum_sql import QuerySpec
 
 
@@ -14,15 +12,11 @@ class ProviderError(RuntimeError):
 class MetricProvider(ABC):
     """What the service needs from a storage engine, and nothing more.
 
-    Subclass it to declare a provider. `name` is what `DATUM_BACKEND` selects it
-    by. A provider that forgets a method fails at construction.
+    Subclass it to declare a provider, then point `app.py` at it. One that
+    forgets a method fails at construction.
+
+    Retrieval only: producers write through vmauth, straight to the store.
     """
-
-    name: ClassVar[str]
-
-    @abstractmethod
-    def write(self, samples: list[Sample]) -> int:
-        """Store the samples. Returns how many were accepted."""
 
     @abstractmethod
     def fetch(self, spec: QuerySpec) -> list[dict]:

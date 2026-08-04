@@ -7,7 +7,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from datum.api.internals import LabelConflict, ProviderError, RemoteWriteError
+from datum.api.internals import ProviderError
 from datum_sql import UnsupportedSQL
 
 UNPROCESSABLE = 422
@@ -16,8 +16,6 @@ UNPROCESSABLE = 422
 # bug and becomes a 500 with a traceback, which is what we want.
 STATUS = {
     UnsupportedSQL: 400,
-    LabelConflict: 400,
-    RemoteWriteError: 400,
     NotImplementedError: 501,
     ProviderError: 503,
 }
