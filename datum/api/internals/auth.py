@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import jwt
 
-PUBLIC_KEY_VARIABLE = "DATUM_JWT_PUBLIC_KEY"
+PUBLIC_KEY_FILE_VARIABLE = "DATUM_JWT_PUBLIC_KEY_FILE"
 ACCESS_CLAIM = "vm_access"
 LABELS_CLAIM = "metrics_extra_labels"
 ALGORITHMS = ["RS256", "RS384", "RS512", "ES256", "ES384", "ES512"]
@@ -35,9 +36,9 @@ class Identity:
 class TokenVerifier:
     """Verifies the JWTs Central mints, against its public key.
 
-    The same key vmauth is configured with, so a token that can write can also
-    read. HMAC is deliberately absent: vmauth verifies with RSA or ECDSA only,
-    and the two must not disagree about what a valid token is.
+    Reads the same PEM `bootstrap.py` points vmauth at, so a token that can
+    write can also read and the two can never disagree. HMAC is deliberately
+    absent: vmauth verifies with RSA or ECDSA only.
     """
 
     def __init__(self, public_key: str | None = None):
@@ -45,8 +46,18 @@ class TokenVerifier:
 
     @classmethod
     def from_env(cls) -> TokenVerifier:
-        """Read `DATUM_JWT_PUBLIC_KEY`. Unset means every /v1 call is a 401."""
-        return cls(os.environ.get(PUBLIC_KEY_VARIABLE))
+        """Read the key at `DATUM_JWT_PUBLIC_KEY_FILE`.
+
+        A path that is set but unreadable is a startup failure, never a service
+        that silently answers 401 to everyone.
+        """
+        location = os.environ.get(PUBLIC_KEY_FILE_VARIABLE)
+        if not location:
+            return cls()
+        path = Path(location)
+        if not path.is_file():
+            raise RuntimeError(f"{PUBLIC_KEY_FILE_VARIABLE} is {location}, which is not a file.")
+        return cls(path.read_text())
 
     @property
     def is_configured(self) -> bool:

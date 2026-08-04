@@ -1,11 +1,19 @@
-"""Run this script to bootstrap the datum service."""
+"""Generate the config for datum's services, then install and start them.
 
+Everything this writes lives under one directory. There is no env file: what a
+service needs is baked into its unit, and the JWT public key stays a file on
+disk that both vmauth and datum-api read.
+"""
+
+import argparse
 import os
 import platform
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
+from datum.api.internals.auth import PUBLIC_KEY_FILE_VARIABLE
 from datum.vmauth import VmauthSettings
 from datum.vmauth import build as build_vmauth_config
 
@@ -14,8 +22,6 @@ SERVICES = Path.home() / "services"
 SYSTEMD = Path.home() / ".config" / "systemd" / "user"
 DATA = Path.home() / ".local" / "share" / "datum" / "victoria-metrics"
 LOGS = Path.home() / ".local" / "share" / "datum" / "logs"
-ENV_FILE = SERVICES / "datum.env"
-VMAUTH_CONFIG = SERVICES / "vmauth.yml"
 
 VICTORIA_ADDRESS = "127.0.0.1:8428"
 DATUM_ADDRESS = "127.0.0.1"
@@ -79,8 +85,8 @@ Wants=victoria-metrics.service
 [Service]
 Type=simple
 WorkingDirectory={repo}
-EnvironmentFile={env_file}
-ExecStart={uvicorn} datum:create_app --factory \\
+Environment=DATUM_URL={victoria_url}
+{key_environment}ExecStart={uvicorn} datum:create_app --factory \\
   --host {host} --port {port} --workers {workers}
 # Uvicorn puts access lines on stdout and everything else on stderr.
 StandardOutput=append:{access_log}
@@ -91,6 +97,92 @@ RestartSec=5
 [Install]
 WantedBy=default.target
 """
+
+
+def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="bootstrap.py",
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+
+    verification = parser.add_argument_group(
+        "verification", "How vmauth checks the JWTs producers send. Pick exactly one."
+    )
+    verification.add_argument(
+        "--public-key",
+        type=Path,
+        metavar="PATH",
+        help="PEM file holding Central's public key. Both services read it.",
+    )
+    verification.add_argument(
+        "--oidc-issuer",
+        metavar="URL",
+        help="Fetch keys from {issuer}/.well-known/openid-configuration instead.",
+    )
+    verification.add_argument(
+        "--skip-verify",
+        action="store_true",
+        help="Accept unsigned tokens. Local testing only: anyone can write as anyone.",
+    )
+
+    parser.add_argument("--victoria-url", default=f"http://{VICTORIA_ADDRESS}")
+    parser.add_argument("--vmauth-listen", default="127.0.0.1:8427")
+    parser.add_argument("--datum-host", default=DATUM_ADDRESS)
+    parser.add_argument("--datum-port", type=int, default=DATUM_PORT)
+    parser.add_argument("--workers", default=WORKERS)
+    parser.add_argument("--retention", default=RETENTION, help="Months VictoriaMetrics keeps.")
+    parser.add_argument("--config-dir", type=Path, default=SERVICES)
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print what would be written, touch nothing, start nothing.",
+    )
+    return parser.parse_args(argv)
+
+
+def ask_for_verification(arguments: argparse.Namespace) -> None:
+    """Fill in the verification choice when no flag gave one."""
+    if arguments.public_key or arguments.oidc_issuer or arguments.skip_verify:
+        return
+    if not sys.stdin.isatty():
+        raise RuntimeError(
+            "No verification configured. Pass --public-key, --oidc-issuer or --skip-verify."
+        )
+
+    print("How should vmauth verify the tokens producers send?")
+    print("  1. A public key file  (Central signs, you hold the public half)")
+    print("  2. OIDC discovery     (Central serves a JWKS endpoint)")
+    print("  3. Skip verification  (local testing; accepts forged tokens)")
+    match input("Choose 1, 2 or 3: ").strip():
+        case "1":
+            arguments.public_key = Path(input("Path to the PEM file: ").strip()).expanduser()
+        case "2":
+            arguments.oidc_issuer = input("Issuer URL: ").strip()
+        case "3":
+            arguments.skip_verify = True
+        case other:
+            raise RuntimeError(f"{other!r} is not one of 1, 2 or 3.")
+
+
+def build_vmauth_settings(arguments: argparse.Namespace) -> VmauthSettings:
+    """Resolve the key path here, so a missing file fails before anything is written."""
+    key = arguments.public_key
+    if key is not None:
+        key = key.expanduser().resolve()
+        if not key.is_file():
+            raise RuntimeError(f"{key} is not a file. Point --public-key at Central's PEM.")
+
+    settings = VmauthSettings(
+        victoria_url=arguments.victoria_url,
+        listen=arguments.vmauth_listen,
+        public_key_path=key,
+        oidc_issuer=arguments.oidc_issuer or "",
+        skip_verify=arguments.skip_verify,
+    )
+    settings.mode  # noqa: B018 -- raises on a missing or ambiguous choice
+    return settings
+
 
 def require_linux():
     if platform.system() != "Linux":
@@ -108,26 +200,35 @@ def run_command(command: list[str], check: bool = True) -> subprocess.CompletedP
     return result
 
 
-def find_binary(name: str, hint: str) -> str:
-    """Locate a required executable, saying how to get it when it is missing."""
-    found = shutil.which(name)
-    if not found:
-        raise RuntimeError(f"{name} is not on PATH. {hint}")
-    return found
+def find_binary(name: str, hint: str, required: bool = True) -> str:
+    """Locate a required executable, saying how to get it when it is missing.
 
-
-def install_unit(name: str, unit: str) -> bool:
-    """Write the unit under ~/services and link it where systemd --user looks.
-
-    Returns whether anything changed, so an unchanged run restarts nothing.
+    A dry run only prints, so it names the binary it would have used rather
+    than refusing on a host where nothing is installed yet.
     """
-    SERVICES.mkdir(parents=True, exist_ok=True)
-    SYSTEMD.mkdir(parents=True, exist_ok=True)
+    found = shutil.which(name)
+    if found:
+        return found
+    if required:
+        raise RuntimeError(f"{name} is not on PATH. {hint}")
+    return f"/usr/local/bin/{name}"
 
-    path = SERVICES / f"{name}.service"
-    changed = not path.exists() or path.read_text() != unit
+
+def write_once(path: Path, content: str, mode: int = 0o644) -> bool:
+    """Write only when the content differs, so a repeat run restarts nothing."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    changed = not path.exists() or path.read_text() != content
     if changed:
-        path.write_text(unit)
+        path.write_text(content)
+    path.chmod(mode)
+    return changed
+
+
+def install_unit(name: str, unit: str, config_dir: Path) -> bool:
+    """Write the unit under the config dir and link it where systemd looks."""
+    SYSTEMD.mkdir(parents=True, exist_ok=True)
+    path = config_dir / f"{name}.service"
+    changed = write_once(path, unit)
 
     link = SYSTEMD / f"{name}.service"
     if not link.is_symlink() or link.readlink() != path:
@@ -140,74 +241,54 @@ def install_unit(name: str, unit: str) -> bool:
     return changed
 
 
-def require_env_file() -> None:
-    """The env file holds tokens, so it is yours to write. Fail here, not at systemd start."""
-    if not ENV_FILE.exists():
-        raise RuntimeError(
-            f"{ENV_FILE} is missing. Create it with DATUM_URL and DATUM_JWT_PUBLIC_KEY, "
-            "then chmod 600 it and run this again."
-        )
-    if ENV_FILE.stat().st_mode & 0o077:
-        raise RuntimeError(f"{ENV_FILE} is readable by others. Run: chmod 600 {ENV_FILE}")
-
-
-def install_vmauth_config(settings: VmauthSettings) -> bool:
-    """Write vmauth's auth config. Returns whether it changed.
-
-    Generated rather than hand-kept, so moving from a pasted public key to OIDC
-    is an environment change and the write path never drifts from the read path.
-    """
-    SERVICES.mkdir(parents=True, exist_ok=True)
-    config = build_vmauth_config(settings)
-    changed = not VMAUTH_CONFIG.exists() or VMAUTH_CONFIG.read_text() != config
-    if changed:
-        VMAUTH_CONFIG.write_text(config)
-    VMAUTH_CONFIG.chmod(0o600)
-
-    print(f"{'Installed' if changed else 'Unchanged'} vmauth config ({settings.mode})")
-    if not settings.is_verifying:
-        print("  WARNING: skip_verify is on. Signatures are not checked; anyone")
-        print("  who reaches this port can write as any tenant.")
-    return changed
-
-
-def build_units(vmauth_settings: VmauthSettings) -> dict[str, str]:
+def build_units(arguments: argparse.Namespace, settings: VmauthSettings) -> dict[str, str]:
+    required = not arguments.dry_run
     victoria = find_binary(
         "victoria-metrics",
         "Install it from https://github.com/VictoriaMetrics/VictoriaMetrics/releases",
+        required,
     )
     vmauth = find_binary(
         "vmauth",
         "It ships in the vmutils archive on the VictoriaMetrics releases page.",
+        required,
     )
     uvicorn = REPO / ".venv" / "bin" / "uvicorn"
-    if not uvicorn.exists():
+    if required and not uvicorn.exists():
         raise RuntimeError(f"{uvicorn} is missing. Run `uv sync --all-groups` in {REPO} first.")
+
+    # Datum verifies reads against the same key vmauth verifies writes against.
+    # With OIDC or skip_verify there is no file to read, so reads stay closed
+    # until the read path learns to fetch a JWKS.
+    key_environment = ""
+    if settings.public_key_path is not None:
+        key_environment = f"Environment={PUBLIC_KEY_FILE_VARIABLE}={settings.public_key_path}\n"
 
     return {
         "victoria-metrics": VictoriaMetricsUnit.format(
             binary=victoria,
             address=VICTORIA_ADDRESS,
             data=DATA,
-            retention=RETENTION,
+            retention=arguments.retention,
             memory=MEMORY_PERCENT,
             hourly=HOURLY_SERIES,
             daily=DAILY_SERIES,
         ),
         "vmauth": VmauthUnit.format(
             binary=vmauth,
-            config=VMAUTH_CONFIG,
-            listen=vmauth_settings.listen,
+            config=arguments.config_dir / "vmauth.yml",
+            listen=settings.listen,
             access_log=LOGS / "vmauth-access.log",
             error_log=LOGS / "vmauth-error.log",
         ),
         "datum-api": DatumApiUnit.format(
             repo=REPO,
-            env_file=ENV_FILE,
+            victoria_url=arguments.victoria_url,
+            key_environment=key_environment,
             uvicorn=uvicorn,
-            host=DATUM_ADDRESS,
-            port=DATUM_PORT,
-            workers=WORKERS,
+            host=arguments.datum_host,
+            port=arguments.datum_port,
+            workers=arguments.workers,
             access_log=LOGS / "access.log",
             error_log=LOGS / "error.log",
         ),
@@ -233,31 +314,57 @@ def start(names: list[str], changed: set[str]) -> None:
             print(f"{name} already running with this unit.")
 
 
-def main() -> None:
-    """Bootstrap the datum service."""
-    require_linux()
-    print("Bootstrapping datum service...")
+def report(settings: VmauthSettings, arguments: argparse.Namespace) -> None:
+    print(f"\nWrites: vmauth on {settings.listen}, verifying by {settings.mode}.")
+    print(f"Reads:  http://{arguments.datum_host}:{arguments.datum_port}")
+    print("VictoriaMetrics stays on loopback; nothing reaches it directly.")
+    print(f"Logs:   {LOGS}/access.log, error.log, vmauth-*.log")
 
-    SERVICES.mkdir(parents=True, exist_ok=True)
+    if not settings.is_verifying:
+        print("\nWARNING: skip_verify is on. Signatures are not checked, so anyone")
+        print("who reaches the write port can push as any tenant.")
+    if settings.public_key_path is None:
+        print(f"\n{PUBLIC_KEY_FILE_VARIABLE} is unset, so datum-api answers 401 to every")
+        print("read. Reads still need a public key file; only writes can use OIDC.")
+
+
+def main(argv: list[str] | None = None) -> None:
+    arguments = parse_arguments(argv)
+    if not arguments.dry_run:
+        require_linux()
+
+    ask_for_verification(arguments)
+    settings = build_vmauth_settings(arguments)
+    config = build_vmauth_config(settings)
+    units = build_units(arguments, settings)
+
+    if arguments.dry_run:
+        print(f"--- {arguments.config_dir / 'vmauth.yml'} ---\n{config}")
+        for name, unit in units.items():
+            print(f"--- {arguments.config_dir / f'{name}.service'} ---\n{unit}")
+        return
+
     DATA.mkdir(parents=True, exist_ok=True)
     # systemd will not create the directory an `append:` path lives in.
     LOGS.mkdir(parents=True, exist_ok=True)
-    require_env_file()
-    vmauth_settings = VmauthSettings.from_env()
-    units = build_units(vmauth_settings)
 
-    changed = {name for name, unit in units.items() if install_unit(name, unit)}
-    if install_vmauth_config(vmauth_settings):
+    changed = {
+        name for name, unit in units.items() if install_unit(name, unit, arguments.config_dir)
+    }
+    if write_once(arguments.config_dir / "vmauth.yml", config, mode=0o600):
         changed.add("vmauth")
+        print(f"Installed vmauth config ({settings.mode})")
 
     enable_linger()
     start(list(units), changed)
-
-    print(f"\nReads: http://{DATUM_ADDRESS}:{DATUM_PORT}. Writes: vmauth on {vmauth_settings.listen}.")
-    print("VictoriaMetrics stays on loopback; nothing reaches it directly.")
-    print(f"After editing {ENV_FILE}: systemctl --user restart datum-api")
-    print(f"Logs: {LOGS}/access.log and error.log")
+    report(settings, arguments)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except RuntimeError as refused:
+        # These messages are written for whoever ran the script; a traceback
+        # would only bury them.
+        print(f"\n{refused}", file=sys.stderr)
+        raise SystemExit(1) from None

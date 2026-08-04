@@ -128,32 +128,22 @@ victoria-metrics -httpListenAddr=127.0.0.1:8428 \
 what makes Datum the only way in. Bind it to `0.0.0.0` and anyone who reaches
 the port can read and write everything, with no token needed.
 
-Make a `.env` file. It is not in the repo — it holds secrets:
-
-```
-DATUM_URL=http://127.0.0.1:8428
-DATUM_JWT_PUBLIC_KEY="-----BEGIN PUBLIC KEY-----
-...Central's public key...
------END PUBLIC KEY-----"
-```
-
-Unset means every call is a 401 — the service never starts up accepting
-everyone by accident.
-
-Then run it:
+Save Central's public key somewhere, then run it:
 
 ```bash
 uv sync --all-groups
-uv run uvicorn "datum:create_app" --factory --reload --env-file .env
+DATUM_URL=http://127.0.0.1:8428 \
+DATUM_JWT_PUBLIC_KEY_FILE=~/services/central.pub \
+  uv run uvicorn "datum:create_app" --factory --reload
 ```
+
+No key means every call is a 401. A key path that does not exist is a startup
+failure, not a service that quietly refuses everyone.
 
 | Variable | Default | What it does |
 |---|---|---|
 | `DATUM_URL` | required | where VictoriaMetrics is |
-| `DATUM_JWT_PUBLIC_KEY` | none | Central's public key. Unset means every call is a 401 |
-| `DATUM_OIDC_ISSUER` | none | fetch keys from `{issuer}/.well-known/openid-configuration` instead |
-| `DATUM_JWT_SKIP_VERIFY` | `0` | `1` accepts unverified tokens. Local testing only |
-| `DATUM_VMAUTH_LISTEN` | `127.0.0.1:8427` | where producers write |
+| `DATUM_JWT_PUBLIC_KEY_FILE` | none | PEM Central signs with. Unset means every call is a 401 |
 | `DATUM_DIALECT` | `mysql` | SQL flavour the translator reads |
 | `DATUM_MODE` | `raw` | `raw` or `step` |
 | `DATUM_IGNORE_PAGINATION` | `1` | drop `LIMIT`/`OFFSET` sent by BI tools. `0` honours them |
@@ -166,22 +156,32 @@ Linux only. Runs as your own user — no root, no sudo.
 git clone https://github.com/frappe/Datum.git ~/datum
 cd ~/datum && uv sync --all-groups
 
-mkdir -p ~/services
-# write ~/services/datum.env with the vars above
-chmod 600 ~/services/datum.env
+# put Central's public key somewhere, then:
+.venv/bin/python bootstrap.py --public-key ~/services/central.pub
+```
 
-.venv/bin/python bootstrap.py
+`bootstrap.py` asks if you leave the verification out, and `--dry-run` prints
+every file it would write without touching anything. `--help` lists the rest:
+`--vmauth-listen`, `--datum-port`, `--retention`, `--config-dir`.
+
+Moving to a JWKS endpoint later is one flag:
+
+```bash
+.venv/bin/python bootstrap.py --oidc-issuer https://central.frappe.io
 ```
 
 You get three services — `victoria-metrics`, `vmauth` and `datum-api`:
 
 ```
-~/services/                     the unit files and datum.env live here
+~/services/                     unit files and vmauth.yml, all generated
 ~/.config/systemd/user/         symlinks, because that is where systemd looks
 ~/.local/share/datum/           the metrics data
-~/services/vmauth.yml           generated; edit the environment, not this
 ~/.local/share/datum/logs/      access.log, error.log, vmauth-*.log
 ```
+
+There is no env file. Each unit carries what it needs, and the public key stays
+a file on disk that both vmauth and datum-api read — so the two can never end
+up verifying against different keys.
 
 ```bash
 systemctl --user status datum-api
@@ -195,14 +195,16 @@ rotates them — add a logrotate rule before they matter.
 Run it twice and nothing happens — it only restarts a service whose unit
 actually changed.
 
-Two things it does not do: install VictoriaMetrics or vmauth (it checks your
-PATH and tells you where to get them), and write `datum.env` (that is yours, it
-holds the key).
+One thing it does not do: install VictoriaMetrics or vmauth. It checks your PATH
+and tells you where to get them.
 
-`vmauth.yml` is generated from the environment on every run, so moving from a
-pasted public key to OIDC is a variable change and a restart. Setting more than
-one of `DATUM_JWT_PUBLIC_KEY`, `DATUM_OIDC_ISSUER` and `DATUM_JWT_SKIP_VERIFY`
-is a startup failure rather than a silent pick.
+Passing more than one of `--public-key`, `--oidc-issuer` and `--skip-verify` is
+a startup failure rather than a silent pick. So is pointing `--public-key` at a
+file that is not there — it fails before anything is written.
+
+**`--oidc-issuer` covers writes only.** Datum's read path still needs a key
+file, so a JWKS-only setup leaves reads answering 401. The script says so when
+it finishes.
 
 **No HTTPS.** Tokens travel in plain text. Fine on loopback or a private
 network. Put a TLS proxy in front before real hosts push to it.
