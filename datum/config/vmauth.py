@@ -3,8 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-DEFAULT_LISTEN = "127.0.0.1:8427"
-
 # What a producer may reach. Query paths are deliberately absent: a token that
 # can write must not be able to read every tenant's series.
 WRITE_PATHS = ("/api/v1/write", "/api/v1/import")
@@ -28,7 +26,7 @@ class VmauthSettings:
     """
 
     victoria_url: str
-    listen: str = DEFAULT_LISTEN
+    listen: str = "127.0.0.1:8427"
     public_key_path: Path | None = None
     oidc_issuer: str = ""
     skip_verify: bool = False

@@ -7,7 +7,7 @@ Standard library only. Nothing from the Datum service. No extra installs.
 ```python
 from datum_client import Batch, Datum
 
-datum = Datum("https://datum.internal", token=DATUM_TOKEN)
+datum = Datum("https://vmauth.internal:8427", token=DATUM_JWT)
 
 memory = Batch("system", "memory")
 memory.gauge("used", 1154545090, "bytes")
@@ -235,21 +235,22 @@ A lost metric is a gap in a chart. Blocking the producer to retry is worse.
 
 | Status | What happened |
 |---|---|
-| 202 | stored |
-| 400 | you sent a label the token already sets |
-| 401 | token missing, wrong, or revoked |
-| 422 | a sample broke a rule; the reply says which field and which sample |
-| 503 | Datum is up, the store is not |
+| 204 | stored |
+| 400 | the body was not valid JSON lines |
+| 401 | JWT missing, expired, unsigned, or signed by the wrong key |
 | 0 | never got there |
 
-The bad case is silence. A dead token gives 401, metrics stop, and the config
-still looks fine. Check the status, or have an alert for a source going quiet.
+The bad case is silence. An expired token gives 401, metrics stop, and the
+config still looks fine. Check the status, or have an alert for a source going
+quiet.
 
 ## The token decides who you are
 
-Do not send `tenant_id`, `source_id`, or any label the token already sets. They
-are rejected. Datum adds them itself. That is what stops one host pretending to
-be another.
+Your JWT carries a `vm_access` claim. vmauth turns it into labels and the store
+applies them **over** whatever you sent, so a label the token already fixes is
+overwritten rather than refused. Sending `tenant_id` will not get you an error
+— it will simply be ignored, which is what stops one host pretending to be
+another.
 
 ```python
 batch.gauge("cpu", 1.2, "percent", service="web")

@@ -12,7 +12,3 @@ LOGS = Path.home() / ".local" / "share" / "datum" / "logs"
 
 VMAUTH_CONFIG = "vmauth.yml"
 UVICORN = REPO / ".venv" / "bin" / "uvicorn"
-
-
-def log(name: str) -> Path:
-    return LOGS / name

@@ -304,7 +304,7 @@ needs no installs beyond the standard library.
 ```python
 from datum_client import Batch, Datum
 
-datum = Datum("https://datum.internal", token=DATUM_TOKEN)
+datum = Datum("https://vmauth.internal:8427", token=DATUM_JWT)
 
 memory = Batch("system", "memory")
 memory.gauge("used", 1154545090, "bytes")     # system_memory_used_bytes

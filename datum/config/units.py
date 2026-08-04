@@ -4,18 +4,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-DEFAULT_API_HOST = "127.0.0.1"
-DEFAULT_API_PORT = 8000
-DEFAULT_WORKERS = "2"
-
 
 @dataclass(frozen=True)
 class ApiSettings:
     """Where datum-api listens and how many workers serve it."""
 
-    host: str = DEFAULT_API_HOST
-    port: int = DEFAULT_API_PORT
-    workers: str = DEFAULT_WORKERS
+    host: str = "127.0.0.1"
+    port: int = 8000
+    workers: str = "2"
 
 
 VMAUTH = """[Unit]
