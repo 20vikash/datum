@@ -7,7 +7,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from datum.api.internals import LabelConflict, ProviderError
+from datum.api.internals import LabelConflict, ProviderError, RemoteWriteError
 from datum_sql import UnsupportedSQL
 
 UNPROCESSABLE = 422
@@ -17,6 +17,7 @@ UNPROCESSABLE = 422
 STATUS = {
     UnsupportedSQL: 400,
     LabelConflict: 400,
+    RemoteWriteError: 400,
     NotImplementedError: 501,
     ProviderError: 503,
 }

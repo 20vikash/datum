@@ -11,7 +11,15 @@ arrow = ["pyarrow>=15"]
 
 # The service is not part of the published library; its deps stay in a group.
 [dependency-groups]
-api = ["fastapi>=0.115", "uvicorn>=0.30"]
+api = [
+    "fastapi>=0.115",
+    # remote_pb2.py is generated gencode and refuses an older runtime than the
+    # protoc that wrote it. Regenerate it if this floor moves.
+    "protobuf>=7.35.1",
+    # 0.7 dropped libsnappy for cramjam, so there is no C toolchain to install.
+    "python-snappy>=0.7",
+    "uvicorn>=0.30",
+]
 dev = [
     "pytest>=8",
     "ruff>=0.6",
@@ -30,6 +38,7 @@ packages = ["datum", "datum_client", "datum_sql"]
 
 [tool.ruff]
 line-length = 100
+extend-exclude = ["*_pb2.py"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -16,7 +16,9 @@ queue, no worker.
 
 ```
 producers --POST /v1/ingest--> datum --> VictoriaMetrics
-                                 ^
+ (JSON)                          ^
+collectors -POST /v1/write ------|
+ (remote write)                  |
                     readers --POST /v1/query
 ```
 
@@ -31,7 +33,8 @@ break a health check.
 
 | Method | Path | Works? |
 |---|---|---|
-| `POST` | `/v1/ingest` | **yes** |
+| `POST` | `/v1/ingest` | **yes** — JSON |
+| `POST` | `/v1/write` | **yes** — Prometheus remote write 1.0 |
 | `POST` | `/v1/query/explain` | **yes** — pure translation, never touches the store |
 | `POST` | `/v1/query` | no — 501, reading is not written yet |
 | `GET` | `/v1/metrics` | no — 501 |
@@ -62,6 +65,40 @@ Rules for a sample:
 - `labels` — optional. Up to 30.
 
 Anything else in the body is rejected. Better to fail loudly than store junk.
+
+## Sending data from Prometheus or vmagent
+
+`/v1/write` speaks Prometheus remote write 1.0: a snappy-compressed
+`prometheus.WriteRequest`. Point any collector that speaks it here.
+
+```yaml
+remote_write:
+  - url: http://localhost:8000/v1/write
+    authorization:
+      credentials: YOUR_TOKEN
+```
+
+Same rules as `/v1/ingest`, because it is the same code past the decoder. The
+metric name arrives as the `__name__` label and is pulled out for you.
+
+- Success is `204`, which is what senders expect.
+- One bad series rejects the whole batch with `400`. Nothing is half-written.
+- A `400` is the sender's to fix, so retrying it will not help.
+- Exemplars, native histograms and metadata are ignored. Datum stores numbers.
+- Remote write 2.0 is refused by name rather than mis-parsed.
+
+Watch out for `external_labels` that collide with the labels your token already
+fixes: that is a `400`, not a silent override. See below.
+
+`remote.proto` carries only the fields Datum stores. Exemplars, native histograms
+and metadata are left out on purpose — protobuf keeps them as unknown fields and
+skips them. Regenerate `remote_pb2.py` after editing it:
+
+```bash
+uv run --with grpcio-tools python -m grpc_tools.protoc \
+  -I datum/api/internals/remote_write \
+  --python_out=datum/api/internals/remote_write remote.proto
+```
 
 ## Tokens
 
