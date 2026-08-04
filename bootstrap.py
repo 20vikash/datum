@@ -10,6 +10,7 @@ REPO = Path(__file__).resolve().parent
 SERVICES = Path.home() / "services"
 SYSTEMD = Path.home() / ".config" / "systemd" / "user"
 DATA = Path.home() / ".local" / "share" / "datum" / "victoria-metrics"
+LOGS = Path.home() / ".local" / "share" / "datum" / "logs"
 ENV_FILE = SERVICES / "datum.env"
 
 VICTORIA_ADDRESS = "127.0.0.1:8428"
@@ -58,6 +59,9 @@ WorkingDirectory={repo}
 EnvironmentFile={env_file}
 ExecStart={uvicorn} datum:create_app --factory \\
   --host {host} --port {port} --workers {workers}
+# Uvicorn puts access lines on stdout and everything else on stderr.
+StandardOutput=append:{access_log}
+StandardError=append:{error_log}
 Restart=always
 RestartSec=5
 
@@ -150,6 +154,8 @@ def build_units() -> dict[str, str]:
             host=DATUM_ADDRESS,
             port=DATUM_PORT,
             workers=WORKERS,
+            access_log=LOGS / "access.log",
+            error_log=LOGS / "error.log",
         ),
     }
 
@@ -180,6 +186,8 @@ def main() -> None:
 
     SERVICES.mkdir(parents=True, exist_ok=True)
     DATA.mkdir(parents=True, exist_ok=True)
+    # systemd will not create the directory an `append:` path lives in.
+    LOGS.mkdir(parents=True, exist_ok=True)
     require_env_file()
     units = build_units()
 
@@ -190,7 +198,7 @@ def main() -> None:
 
     print(f"\nDatum is on http://{DATUM_ADDRESS}:{DATUM_PORT}, VictoriaMetrics on loopback only.")
     print(f"After editing {ENV_FILE}: systemctl --user restart datum-api")
-    print("Logs: journalctl --user -u datum-api -f")
+    print(f"Logs: {LOGS}/access.log and error.log")
 
 
 if __name__ == "__main__":

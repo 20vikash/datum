@@ -199,12 +199,17 @@ You get two services:
 ~/services/                     the unit files and datum.env live here
 ~/.config/systemd/user/         symlinks, because that is where systemd looks
 ~/.local/share/datum/           the metrics data
+~/.local/share/datum/logs/      access.log and error.log
 ```
 
 ```bash
 systemctl --user status datum-api
-journalctl --user -u datum-api -f
+tail -f ~/.local/share/datum/logs/access.log
 ```
+
+The unit sends stdout to `access.log` and stderr to `error.log`, which is how
+uvicorn splits them. They go to the files instead of the journal, and nothing
+rotates them — add a logrotate rule before they matter.
 
 Run it twice and nothing happens — it only restarts a service whose unit
 actually changed.
