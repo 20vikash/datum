@@ -1,17 +1,255 @@
 # datum
 
-Telemetry over VictoriaMetrics. Two pieces:
+Datum stores numbers about your fleet. Producers push them in. You read them
+back with SQL.
 
-- `datum_sql` — a standalone SQL to PromQL translator. No network, no dependencies
-  beyond `sqlglot`.
-- `datum` — the HTTP service that fetches and serves.
-- `datum_client` — what producers import to push metrics. Standard library only;
-  see [`datum_client/README.md`](datum_client/README.md).
+Three parts:
 
-## datum_sql
+| Part | What it is | Who uses it |
+|---|---|---|
+| `datum` | the HTTP service | runs on a server |
+| `datum_client` | the thing producers import to push | Pilot, agents |
+| `datum_sql` | turns SQL into PromQL | the service, and Insights |
 
-A metric is a table. Its labels are columns, plus `ts` and `value`. One `SELECT`
-becomes one PromQL query.
+VictoriaMetrics does the storing. Nothing sits between the service and it — no
+queue, no worker.
+
+```
+producers --POST /v1/ingest--> datum --> VictoriaMetrics
+                                 ^
+                    readers --POST /v1/query
+```
+
+---
+
+# The service
+
+## Endpoints
+
+Everything real lives under `/v1`. `/health` does not, so a future `/v2` cannot
+break a health check.
+
+| Method | Path | Works? |
+|---|---|---|
+| `POST` | `/v1/ingest` | **yes** |
+| `POST` | `/v1/query/explain` | **yes** — pure translation, never touches the store |
+| `POST` | `/v1/query` | no — 501, reading is not written yet |
+| `GET` | `/v1/metrics` | no — 501 |
+| `GET` | `/v1/metrics/{metric}/columns` | no — 501 |
+| `GET` | `/health` | **yes** |
+
+Browse them at `/docs`. Raw schema at `/v1/openapi.json`.
+
+## Sending data
+
+```bash
+curl -X POST http://localhost:8000/v1/ingest \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"samples":[
+        {"metric":"system_cpu_percent","value":12.5,
+         "ts":"2026-08-04T09:00:00Z","labels":{"host":"a"}}
+      ]}'
+```
+
+Reply: `{"accepted": 1}` with status 202.
+
+Rules for a sample:
+
+- `metric` — lowercase, underscores. No dots. Required.
+- `value` — a real number. `NaN` and `Inf` are rejected. Required.
+- `ts` — RFC 3339. **Required.** Datum will not guess it for you.
+- `labels` — optional. Up to 30.
+
+Anything else in the body is rejected. Better to fail loudly than store junk.
+
+## Tokens
+
+Every `/v1` call needs `Authorization: Bearer <token>`.
+
+Datum keeps only `sha256(token)`. Each token maps to an identity: a tenant, a
+source, and some fixed labels.
+
+Datum adds that identity to every sample you send:
+
+```
+you send:    system_cpu_percent{host="a"}
+gets stored: system_cpu_percent{host="a", tenant_id="acme",
+                                source_id="pilot_1", region="ap_south_1"}
+```
+
+So do **not** send `tenant_id`, `source_id`, or any label your token already
+sets. Those come back as 400. That is what stops one host pretending to be
+another.
+
+## What each status means
+
+| Status | Meaning |
+|---|---|
+| 202 | stored |
+| 400 | you sent a label the token already sets |
+| 401 | token missing, wrong, or revoked |
+| 422 | a sample broke a rule; the reply says which field and which sample |
+| 501 | that part is not written yet |
+| 503 | Datum is up, VictoriaMetrics is not |
+
+## Running it locally
+
+Start VictoriaMetrics:
+
+```bash
+brew install victoriametrics
+victoria-metrics -httpListenAddr=127.0.0.1:8428 \
+  -storageDataPath=/opt/homebrew/var/victoriametrics-data
+```
+
+**`127.0.0.1` matters.** VictoriaMetrics has no login of its own. Loopback is
+what makes Datum the only way in. Bind it to `0.0.0.0` and anyone who reaches
+the port can read and write everything, with no token needed.
+
+Make a `.env` file. It is not in the repo — it holds secrets:
+
+```
+DATUM_URL=http://127.0.0.1:8428
+DATUM_BACKEND=victoriametrics
+DATUM_TOKENS='{"a-secret":{"tenant":"acme","source":"pilot_1","labels":{"region":"ap_south_1"}}}'
+```
+
+Single quotes around the JSON matter. Without them `source .env` eats the
+quotes inside. Bad JSON stops the service at startup — it never runs with an
+empty token list by accident.
+
+Make a token with:
+
+```bash
+python3 -c "import secrets; print(secrets.token_urlsafe(32))"
+```
+
+Then run it:
+
+```bash
+uv sync --all-groups
+uv run uvicorn "datum:create_app" --factory --reload --env-file .env
+```
+
+| Variable | Default | What it does |
+|---|---|---|
+| `DATUM_URL` | required | where VictoriaMetrics is |
+| `DATUM_BACKEND` | `victoriametrics` | which storage provider to use |
+| `DATUM_TOKENS` | none | who may push. Unset means every call is a 401 |
+| `DATUM_DIALECT` | `mysql` | SQL flavour the translator reads |
+| `DATUM_MODE` | `raw` | `raw` or `step` |
+
+## Putting it on a server
+
+Linux only. Runs as your own user — no root, no sudo.
+
+```bash
+git clone https://github.com/frappe/Datum.git ~/datum
+cd ~/datum && uv sync --all-groups
+
+mkdir -p ~/services
+# write ~/services/datum.env with the vars above
+chmod 600 ~/services/datum.env
+
+.venv/bin/python bootstrap.py
+```
+
+You get two services:
+
+```
+~/services/                     the unit files and datum.env live here
+~/.config/systemd/user/         symlinks, because that is where systemd looks
+~/.local/share/datum/           the metrics data
+```
+
+```bash
+systemctl --user status datum-api
+journalctl --user -u datum-api -f
+```
+
+Run it twice and nothing happens — it only restarts a service whose unit
+actually changed.
+
+Two things it does not do: install VictoriaMetrics (it checks your PATH and
+tells you where to get it), and write `datum.env` (that is yours, it holds
+tokens).
+
+**No HTTPS.** Tokens travel in plain text. Fine on loopback or a private
+network. Put a TLS proxy in front before real hosts push to it.
+
+## Swapping the storage engine
+
+VictoriaMetrics is the only one that ships. But it plugs in through one small
+interface, so adding another is a new file, not a rewrite.
+
+```python
+from datum.api.internals.providers import PROVIDERS, MetricProvider
+
+
+class ClickHouseProvider(MetricProvider):
+    name = "clickhouse"
+
+    def __init__(self, url, **options): ...
+
+    def write(self, samples) -> int: ...
+    def fetch(self, spec) -> list[dict]: ...
+
+    @property
+    def metrics(self) -> list[str]: ...
+
+    def get_labels(self, metric) -> list[str]: ...
+    def get_label_values(self, metric, label) -> list[str]: ...
+
+
+PROVIDERS["clickhouse"] = ClickHouseProvider
+```
+
+Pick it with `DATUM_BACKEND=clickhouse`.
+
+Two rules:
+
+- **A provider stores and fetches. It never reads SQL.** `fetch` gets a plan
+  that `datum_sql` already made. A provider that starts parsing SQL is a second
+  query engine, which is the thing this seam exists to stop.
+- **Nothing outside `providers/` knows which one is running.** If some other
+  code needs to know, the seam is wrong — fix that, not the code.
+
+`MetricProvider` is an ABC. Miss a method and it fails when built, not halfway
+through a request.
+
+---
+
+# The client
+
+Producers should not hand-write HTTP or metric names. Use `datum_client`. It
+needs no installs beyond the standard library.
+
+```python
+from datum_client import Batch, Datum
+
+datum = Datum("https://datum.internal", token=DATUM_TOKEN)
+
+memory = Batch("system", "memory")
+memory.gauge("used", 1154545090, "bytes")     # system_memory_used_bytes
+
+datum.send(memory)
+```
+
+It builds names for you, keeps them consistent, and blocks labels that would
+wreck the store — like `pid`, which makes a brand new series on every restart.
+
+Full guide: [`datum_client/README.md`](datum_client/README.md).
+
+---
+
+# datum_sql
+
+Turns SQL into PromQL. Standalone — no network, and it never imports the
+service. Works against VictoriaMetrics, Prometheus or Thanos.
+
+A metric is a table. Its labels are the columns, plus `ts` and `value`. One
+`SELECT` becomes one PromQL query.
 
 ```python
 from datum_sql import plan, shape
@@ -26,17 +264,16 @@ spec = plan("""
 """)
 
 spec.selector    # 'system_cpu_percent{region="ap-south-1"}'
-spec.start, spec.end, spec.step, spec.mode
 spec.describe()  # the whole plan as a dict
 
-result = shape(rows_you_fetched, spec)   # projection, ORDER BY, LIMIT
+result = shape(rows_you_fetched, spec)
 result.columns, result.rows, result.truncated
 ```
 
-Fetching is yours. `plan()` tells you what to ask the store for; `shape()`
-applies the parts of the query a PromQL selector cannot express.
+Fetching is yours. `plan()` says what to ask for. `shape()` does the parts
+PromQL cannot.
 
-### How the mapping works
+## How the mapping works
 
 | SQL | PromQL |
 |---|---|
@@ -47,14 +284,13 @@ applies the parts of the query a PromQL selector cannot express.
 | `WHERE source_id LIKE 'srv-%'` | `{source_id=~"srv-.*"}` |
 | `WHERE region IN ('ap','us')` | `{region=~"ap\|us"}` |
 | `WHERE region REGEXP '^ap'` | `{region=~"^ap"}` |
-| `WHERE labels['region'] = 'ap'` | `{region="ap"}` (Presto-style access) |
-| `SELECT a, b` / `ORDER BY` / `LIMIT` | applied by `shape()` to the returned rows |
+| `WHERE labels['region'] = 'ap'` | `{region="ap"}` (Presto style) |
+| `SELECT a, b` / `ORDER BY` / `LIMIT` | done by `shape()` on the rows you fetched |
 
-### What it refuses
+## What it refuses
 
-PromQL returns one value per series per timestamp. It cannot return two metrics
-side by side, so anything needing a second table is refused by name rather than
-silently mistranslated:
+PromQL gives one value per series per timestamp. It cannot put two metrics side
+by side. So anything needing a second table is refused by name, not guessed at:
 
 ```
 JOIN            -> "JOIN is not supported..."
@@ -64,137 +300,31 @@ WHERE value > 8 -> "Filtering on value is not supported..."
 OR              -> "OR is not supported. Use IN (...)"
 ```
 
-Fetch the rows and aggregate in your application, or use two queries and combine
-the results yourself.
+Fetch the rows and do it in your own code, or run two queries.
 
-### raw vs step
+Why `WHERE value > 8` cannot work: labels are an index, values are not. Datum
+would have to fetch everything and filter in Python, which looks like it works
+until the day it does not.
 
-```python
-plan(sql, mode="raw")   # default: only stored samples
-plan(sql, mode="step")  # resampled onto a fixed grid, values carried forward
-```
-
-`raw` means an instant query with a range selector, so `SELECT *` returns what is
-actually stored. `step` means `query_range`, which is what charts want but repeats
-the last value across empty grid points — 9 stored samples can come back as 114
-rows.
-
-### Safety
-
-- Unbounded queries get a **1 hour** default window (`default_window=`)
-- `shape()` caps results at **500 000 rows** (`max_rows=`), with `result.truncated`
-- Metric names are used verbatim; producers sanitise `.` to `_` before storing
-
-## The service
-
-Everything documented lives under `/v1`. `/health` is deliberately unversioned
-and hidden from the schema, so a future `/v2` never breaks a liveness probe.
-
-| Method | Path | Status |
-|---|---|---|
-| `POST` | `/v1/ingest` | 501 — needs a written provider |
-| `POST` | `/v1/query` | 501 — needs a written provider |
-| `POST` | `/v1/query/explain` | works; pure translation, no fetch |
-| `GET` | `/v1/metrics` | 501 — needs a written provider |
-| `GET` | `/v1/metrics/{metric}/columns` | 501 — needs a written provider |
-| `GET` | `/health` | works |
-
-Schema at `/v1/openapi.json`, browsable at `/docs`.
-
-Every `/v1` call needs `Authorization: Bearer <token>`. Central mints tokens;
-Datum stores only `sha256(token)` and the identity it maps to. That identity —
-tenant, source, and the producer's fixed labels — is stamped onto every sample.
-A body claiming a label its own token already fixes is a 400, because otherwise
-any host could claim to be another.
-
-## Storage providers
-
-VictoriaMetrics is the only engine that ships, but it reaches the service
-through one narrow interface, so swapping it is a new file rather than a
-rewrite. Pick one with `DATUM_BACKEND`.
+## raw vs step
 
 ```python
-from datum.api.internals.providers import MetricProvider, register
-
-
-class ClickHouseProvider(MetricProvider):
-    name = "clickhouse"
-
-    def __init__(self, url, token=None, **options): ...
-
-    def write(self, samples) -> int: ...
-    def fetch(self, spec) -> list[dict]: ...
-
-    @property
-    def metrics(self) -> list[str]: ...
-
-    def get_labels(self, metric) -> list[str]: ...
-    def get_label_values(self, metric, label) -> list[str]: ...
-
-
-register(ClickHouseProvider.name, ClickHouseProvider)
+plan(sql, mode="raw")    # default: only what is stored
+plan(sql, mode="step")   # on a fixed grid, repeating the last value
 ```
 
-That is the whole contract. Two rules keep it honest:
+`raw` gives you the real samples. `step` is what charts want, but it repeats
+values across gaps — 9 stored samples can come back as 114 rows.
 
-- **A provider stores and retrieves; it never queries.** `fetch` receives a
-  `QuerySpec` that `datum_sql` already produced, and returns rows. Translation
-  and shaping stay in `datum_sql` — a provider that starts interpreting SQL is a
-  second query engine.
-- **Nothing outside `providers/` knows which one is running.** No branching on
-  the backend anywhere else. If a change needs to know, the seam is wrong.
+## Safety
 
-`MetricProvider` is an ABC, so a provider missing a method fails when it is
-built rather than returning `None` at request time.
+- No time range in the query? You get **1 hour**, never all of retention.
+- `shape()` stops at **500 000 rows** and sets `result.truncated`.
+- Metric names are used as-is. Producers turn `.` into `_` before sending.
 
-## Running locally
+---
 
-VictoriaMetrics, on macOS:
-
-```bash
-brew install victoriametrics
-victoria-metrics -httpListenAddr=127.0.0.1:8428 \
-  -storageDataPath=/opt/homebrew/var/victoriametrics-data
-```
-
-`127.0.0.1` is load-bearing, not a default. VictoriaMetrics has no auth of its
-own, so binding it to loopback is what makes FastAPI the only way in — Datum
-sends no credential because there is nobody to send one to. Bound to `0.0.0.0`
-it would accept reads and writes from anyone who can reach the port, with none
-of the token checks above.
-
-The service:
-
-```bash
-uv sync --all-groups
-cp .env.example .env        # then edit the tokens
-uv run uvicorn "datum:create_app" --factory --reload --env-file .env
-```
-
-| Variable | Default | Meaning |
-|---|---|---|
-| `DATUM_URL` | required | where the store lives |
-| `DATUM_BACKEND` | `victoriametrics` | which provider to build |
-| `DATUM_TOKENS` | none | JSON of accepted token to identity; unset means every `/v1` call is a 401 |
-| `DATUM_DIALECT` | `mysql` | SQL dialect the translator parses |
-| `DATUM_MODE` | `raw` | `raw` or `step` |
-
-Tokens come from `DATUM_TOKENS`, hand-written for now:
-
-```
-DATUM_TOKENS='{"a-secret":{"tenant":"acme","source":"pilot_1","labels":{"region":"ap_south_1"}}}'
-```
-
-Single quotes matter — without them `source .env` strips the JSON's own quotes.
-Malformed JSON is a startup failure, never a silently empty store.
-
-Opaque hashed tokens are a POC. Production tokens are expected to be JWTs
-verified against Central's JWKS, which swaps `TokenStore` for a verifier with
-the same `resolve(token) -> Identity | None` shape. The trade to decide then is
-revocation: a hashed token dies the moment it is deleted, a signed one stays
-valid until it expires.
-
-## Tests
+# Tests
 
 ```bash
 uv run pytest
