@@ -58,9 +58,9 @@ CLAIMS = {"vm_access": {"metrics_extra_labels": ["tenant_id=acme", "source_id=pi
 IDENTITY = Identity(labels={"tenant_id": "acme", "source_id": "pilot_1"})
 
 
-def mint(claims: dict | None = None, key: str | None = None) -> str:
+def mint(claims: dict | None = None, key: str | None = None, headers: dict | None = None) -> str:
     """A JWT the way Central would sign one."""
-    return jwt.encode(claims or CLAIMS, key or PRIVATE_KEY, algorithm="RS256")
+    return jwt.encode(claims or CLAIMS, key or PRIVATE_KEY, algorithm="RS256", headers=headers)
 
 
 TOKEN = mint()

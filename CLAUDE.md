@@ -92,7 +92,9 @@ read and storage there is nothing but the provider, which holds no logic of its 
   whatever the body claimed, so a spoofed label loses. It is overridden, not refused — datum no
   longer sees the payload, which is the price of keeping Python out of the write path.
 - Signatures are RSA or ECDSA. vmauth accepts nothing else, so datum must not either: the two
-  disagreeing about what a valid token is would be the bug.
+  disagreeing about what a valid token is would be the bug. The same applies to how the key is
+  obtained — one `bootstrap.py` flag configures both, and `TokenVerifier` does the same discovery
+  vmauth does, refreshing on the same five minutes.
 - Auth attaches to the `/v1` mount, not to individual routes, so a new route is authenticated by
   default. It resolves before validation, so a stranger sending nonsense gets 401 and learns
   nothing about the schema.

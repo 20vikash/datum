@@ -99,9 +99,9 @@ gets stored: system_cpu_percent{host="a", tenant_id="acme", source_id="pilot_1"}
 A spoofed label loses rather than being refused. That is the one behaviour that
 changed with vmauth: it overrides silently instead of answering 400.
 
-Datum verifies the same JWT with the same key for reads, so one token works for
-both. Signatures are RSA or ECDSA — vmauth does not accept HMAC, so neither does
-Datum.
+Datum verifies the same JWT the same way for reads — the same key file, or the
+same issuer — so one token works for both. Signatures are RSA or ECDSA: vmauth
+does not accept HMAC, so neither does Datum.
 
 ## What each status means
 
@@ -143,7 +143,8 @@ failure, not a service that quietly refuses everyone.
 | Variable | Default | What it does |
 |---|---|---|
 | `DATUM_URL` | required | where VictoriaMetrics is |
-| `DATUM_JWT_PUBLIC_KEY_FILE` | none | PEM Central signs with. Unset means every call is a 401 |
+| `DATUM_JWT_PUBLIC_KEY_FILE` | none | PEM Central signs with |
+| `DATUM_OIDC_ISSUER` | none | fetch the key set from the issuer instead. With neither, every call is a 401 |
 | `DATUM_DIALECT` | `mysql` | SQL flavour the translator reads |
 | `DATUM_MODE` | `raw` | `raw` or `step` |
 | `DATUM_IGNORE_PAGINATION` | `1` | drop `LIMIT`/`OFFSET` sent by BI tools. `0` honours them |
@@ -202,9 +203,14 @@ Passing more than one of `--public-key`, `--oidc-issuer` and `--skip-verify` is
 a startup failure rather than a silent pick. So is pointing `--public-key` at a
 file that is not there — it fails before anything is written.
 
-**`--oidc-issuer` covers writes only.** Datum's read path still needs a key
-file, so a JWKS-only setup leaves reads answering 401. The script says so when
-it finishes.
+`--oidc-issuer` configures both sides: vmauth verifies writes against the
+fetched key set and datum-api verifies reads against the same one, refreshing
+every five minutes to match vmauth. Tokens must carry an `iss` matching the
+issuer exactly, which is what vmauth requires too.
+
+While the issuer is unreachable, reads answer 401 rather than being let
+through. `--skip-verify` leaves reads closed on purpose: writes are open and
+reads are not, which is the shape a local testing mode should have.
 
 **No HTTPS.** Tokens travel in plain text. Fine on loopback or a private
 network. Put a TLS proxy in front before real hosts push to it.

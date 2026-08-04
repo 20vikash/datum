@@ -13,7 +13,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from datum.api.internals.auth import PUBLIC_KEY_FILE_VARIABLE
+from datum.api.internals.auth import ISSUER_VARIABLE, PUBLIC_KEY_FILE_VARIABLE
 from datum.config import units
 from datum.config.paths import DATA, LOGS, REPO, SERVICES, SYSTEMD, UVICORN, VMAUTH_CONFIG
 from datum.config.units import ApiSettings
@@ -181,12 +181,14 @@ def build_units(arguments: argparse.Namespace, settings: VmauthSettings) -> dict
     if required and not UVICORN.exists():
         raise RuntimeError(f"{UVICORN} is missing. Run `uv sync --all-groups` in {REPO} first.")
 
-    # Datum verifies reads against the same key vmauth verifies writes against.
-    # With OIDC or skip_verify there is no file to read, so reads stay closed
-    # until the read path learns to fetch a JWKS.
+    # Datum verifies reads the same way vmauth verifies writes: the same key
+    # file, or the same issuer. skip_verify has neither, so reads stay closed
+    # while writes are open -- deliberately, since it is a local testing mode.
     key_environment = ""
     if settings.public_key_path is not None:
         key_environment = f"Environment={PUBLIC_KEY_FILE_VARIABLE}={settings.public_key_path}\n"
+    elif settings.oidc_issuer:
+        key_environment = f"Environment={ISSUER_VARIABLE}={settings.oidc_issuer}\n"
 
     store = VictoriaSettings(
         listen=arguments.victoria_listen,
@@ -252,9 +254,8 @@ def report(settings: VmauthSettings, arguments: argparse.Namespace) -> None:
     if not settings.is_verifying:
         print("\nWARNING: skip_verify is on. Signatures are not checked, so anyone")
         print("who reaches the write port can push as any tenant.")
-    if settings.public_key_path is None:
-        print(f"\n{PUBLIC_KEY_FILE_VARIABLE} is unset, so datum-api answers 401 to every")
-        print("read. Reads still need a public key file; only writes can use OIDC.")
+    if not settings.is_verifying:
+        print("Reads stay closed: datum-api has no key, so every read is a 401.")
 
 
 def main(argv: list[str] | None = None) -> None:

@@ -82,3 +82,19 @@ def test_retention_and_memory_are_not_hardcoded_in_the_unit(key):
 
     assert "-retentionPeriod=3" in built["victoria-metrics"]
     assert "-memory.allowedPercent=25" in built["victoria-metrics"]
+
+
+def test_oidc_reaches_the_api_unit_too():
+    """One flag configures both sides, or the read path silently 401s."""
+    built, _ = units("--oidc-issuer", "https://central.frappe.io")
+
+    assert "Environment=DATUM_OIDC_ISSUER=https://central.frappe.io\n" in built["datum-api"]
+    assert 'issuer: "https://central.frappe.io"' not in built["datum-api"]
+
+
+def test_skip_verify_leaves_reads_closed():
+    """Writes open and reads shut is deliberate for a local testing mode."""
+    built, _ = units("--skip-verify")
+
+    assert PUBLIC_KEY_FILE_VARIABLE not in built["datum-api"]
+    assert "DATUM_OIDC_ISSUER" not in built["datum-api"]
