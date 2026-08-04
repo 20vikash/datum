@@ -7,24 +7,26 @@ Three parts:
 
 | Part | What it is | Who uses it |
 |---|---|---|
-| `datum` | the HTTP service | runs on a server |
-| `datum_client` | the thing producers import to push | Pilot, agents |
+| `datum` | reads: SQL over HTTP | Insights |
+| `datum_client` | what producers import to push | Pilot, agents |
 | `datum_sql` | turns SQL into PromQL | the service, and Insights |
 
-VictoriaMetrics does the storing. Nothing queues or buffers on the way in —
-vmauth checks the token and passes the bytes straight through.
+VictoriaMetrics stores everything. Two doors lead to it, and both check the
+same token:
 
 ```
-producers  --POST /api/v1/import--┐
- (JSON)                           ├--> vmauth --> VictoriaMetrics
-collectors --POST /api/v1/write---┘      (JWT)         ^
- (remote write)                                        |
-                          readers --POST /v1/query--> datum
+producers  (JSON) ─────────┐
+collectors (remote write) ─┴──> vmauth ──┐
+                                         ├──> VictoriaMetrics
+readers    (SQL) ──────────> datum ──────┘
 ```
 
-Writes never touch Python. vmauth verifies the JWT and proxies straight to
-VictoriaMetrics, which stamps identity from the token's claim. Datum serves
-reads only.
+Writes never touch Python. vmauth checks the token and hands the bytes to
+VictoriaMetrics, which stamps the caller's labels on the way in. Datum only
+reads: it turns SQL into PromQL and asks VictoriaMetrics for the rows.
+
+Nothing queues or buffers. If VictoriaMetrics is down, a write fails and the
+producer moves on.
 
 ---
 
@@ -74,9 +76,10 @@ remote_write:
 Both answer `204`. Only those two paths are proxied — a write token that tries
 `/api/v1/query` gets a `400`, so it can never read another tenant's series.
 
-**Datum no longer validates samples.** VictoriaMetrics accepts what it is given,
-so a metric name with a dot in it is now stored rather than refused. Identity is
-still enforced, because the token's labels overwrite whatever the body claimed.
+**Nothing checks your samples.** VictoriaMetrics takes what it is given, so a
+metric name with a dot in it is stored rather than refused. Get the names right
+in the producer — `datum_client` does that for you. What is enforced is who you
+are: the token's labels always win.
 
 ## Tokens
 
@@ -88,20 +91,20 @@ Identity lives in the `vm_access` claim:
 {"vm_access": {"metrics_extra_labels": ["tenant_id=acme", "source_id=pilot_1"]}}
 ```
 
-vmauth turns those into `extra_label` query args and VictoriaMetrics applies
-them **over** whatever the body carried:
+vmauth turns those into `extra_label` query args, and VictoriaMetrics writes
+them **over** whatever your body said:
 
 ```
 you send:    system_cpu_percent{host="a", tenant_id="someone_else"}
 gets stored: system_cpu_percent{host="a", tenant_id="acme", source_id="pilot_1"}
 ```
 
-A spoofed label loses rather than being refused. That is the one behaviour that
-changed with vmauth: it overrides silently instead of answering 400.
+So claiming someone else's `tenant_id` does not work. Note that you get no error
+for trying — the label is quietly replaced, not refused.
 
-Datum verifies the same JWT the same way for reads — the same key file, or the
-same issuer — so one token works for both. Signatures are RSA or ECDSA: vmauth
-does not accept HMAC, so neither does Datum.
+Reads use the same token and the same key, so one token works on both doors.
+Signatures must be RSA or ECDSA. vmauth cannot check HMAC, so neither does
+datum: if they disagreed about what a valid token is, that would be the bug.
 
 ## What each status means
 
@@ -116,72 +119,43 @@ does not accept HMAC, so neither does Datum.
 
 ## Running it locally
 
-Start VictoriaMetrics:
+Three programs run: VictoriaMetrics stores the numbers, vmauth checks tokens on
+writes, and datum answers reads. This works on a Mac — no systemd involved.
+
+Install the two binaries. VictoriaMetrics is in Homebrew; vmauth is not, so take
+it from the `vmutils` archive on the
+[releases page](https://github.com/VictoriaMetrics/VictoriaMetrics/releases) and
+use the same version:
 
 ```bash
 brew install victoriametrics
-victoria-metrics -httpListenAddr=127.0.0.1:8428 \
-  -storageDataPath=/opt/homebrew/var/victoriametrics-data
+# unpack vmutils, then:
+install -m 755 vmauth-prod /opt/homebrew/bin/vmauth
 ```
 
-**`127.0.0.1` matters.** VictoriaMetrics has no login of its own. Loopback is
-what makes Datum the only way in. Bind it to `0.0.0.0` and anyone who reaches
-the port can read and write everything, with no token needed.
-
-Save Central's public key somewhere, then run it:
-
-```bash
-uv sync --all-groups
-DATUM_URL=http://127.0.0.1:8428 \
-DATUM_JWT_PUBLIC_KEY_FILE=~/services/central.pub \
-  uv run uvicorn "datum:create_app" --factory --reload
-```
-
-No key means every call is a 401. A key path that does not exist is a startup
-failure, not a service that quietly refuses everyone.
-
-| Variable | Default | What it does |
-|---|---|---|
-| `DATUM_URL` | required | where VictoriaMetrics is |
-| `DATUM_JWT_PUBLIC_KEY_FILE` | none | PEM Central signs with |
-| `DATUM_OIDC_ISSUER` | none | fetch the key set from the issuer instead. With neither, every call is a 401 |
-| `DATUM_DIALECT` | `mysql` | SQL flavour the translator reads |
-| `DATUM_MODE` | `raw` | `raw` or `step` |
-| `DATUM_IGNORE_PAGINATION` | `1` | drop `LIMIT`/`OFFSET` sent by BI tools. `0` honours them |
-
-## Putting it on a server
-
-Linux only. Runs as your own user — no root, no sudo.
-
-```bash
-git clone https://github.com/frappe/Datum.git ~/datum
-cd ~/datum && uv sync --all-groups
-
-# put Central's public key somewhere, then:
-.venv/bin/python bootstrap.py --public-key ~/services/central.pub
-```
-
-`bootstrap.py` asks if you leave the verification out. `--dry-run` prints every
-file it would write without touching anything. `--help` lists the rest:
-`--vmauth-listen`, `--datum-port`, `--retention`, `--config-dir`, `--data-dir`.
-
-## Running the whole thing locally
-
-`--config-only` writes the vmauth config and prints the three commands to run
-by hand. No units and no systemd, so it works on a Mac:
+Make a test key pair. Central will sign tokens with the private half; both
+vmauth and datum check them with the public half:
 
 ```bash
 mkdir -p .dev
 openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out .dev/central.key
 openssl rsa -in .dev/central.key -pubout -out .dev/central.pub
 chmod 600 .dev/central.key
+```
 
+Write the config. `--config-only` skips the systemd part and prints the three
+commands to run:
+
+```bash
+uv sync --all-groups
 uv run python bootstrap.py --config-only \
   --public-key .dev/central.pub --config-dir .dev --data-dir .dev/data
 ```
 
-`.dev/` is gitignored. Run the three printed commands in three terminals, then
-mint a token to talk to them:
+`.dev/` is gitignored, so the test key cannot be committed by accident. Run the
+three printed commands in three terminals.
+
+Now make a token and use it:
 
 ```bash
 JWT=$(uv run --with 'pyjwt[crypto]' python -c "
@@ -191,27 +165,49 @@ print(jwt.encode({'exp': int(time.time())+3600,
   'vm_access': {'metrics_extra_labels': ['tenant_id=acme','source_id=pilot_1']}},
   Path('.dev/central.key').read_text(), algorithm='RS256'))")
 
+# write, through vmauth
 curl -X POST http://127.0.0.1:8427/api/v1/import -H "Authorization: Bearer $JWT" \
   -d '{"metric":{"__name__":"cpu"},"values":[7],"timestamps":['$(date +%s)'000]}'
 
+# read, through datum
 curl -X POST http://127.0.0.1:8000/v1/query -H "Authorization: Bearer $JWT" \
   -H 'Content-Type: application/json' -d '{"sql":"SELECT * FROM cpu"}'
 ```
 
-Tokens last an hour. An expired one is a 401 everywhere and looks exactly like
-a wrong key, so mint a fresh one before wondering what broke.
+Tokens last an hour. An expired one gives 401 everywhere and looks exactly like
+a wrong key, so make a fresh one before hunting for a bug.
 
-`vmauth` is not in Homebrew. Take it from the `vmutils` archive on the
-[releases page](https://github.com/VictoriaMetrics/VictoriaMetrics/releases)
-and match your VictoriaMetrics version.
+Datum reads these from its environment:
 
-Moving to a JWKS endpoint later is one flag:
+| Variable | Default | What it does |
+|---|---|---|
+| `DATUM_URL` | required | where VictoriaMetrics is |
+| `DATUM_JWT_PUBLIC_KEY_FILE` | none | the PEM file to check tokens against |
+| `DATUM_OIDC_ISSUER` | none | fetch keys from an issuer instead. With neither, every call is a 401 |
+| `DATUM_DIALECT` | `mysql` | SQL flavour the translator reads |
+| `DATUM_MODE` | `raw` | `raw` or `step` |
+| `DATUM_IGNORE_PAGINATION` | `1` | drop `LIMIT`/`OFFSET` sent by BI tools. `0` honours them |
+
+`bootstrap.py` sets the first three for you. You only set them by hand if you
+run uvicorn yourself.
+
+**Keep VictoriaMetrics on `127.0.0.1`.** It has no login of its own. vmauth and
+datum are what stand in front of it. Bind it to `0.0.0.0` and anyone who reaches
+the port can read and write everything, no token needed.
+
+## Putting it on a server
+
+Linux only. Runs as your own user — no root, no sudo.
 
 ```bash
-.venv/bin/python bootstrap.py --oidc-issuer https://central.frappe.io
+git clone https://github.com/frappe/Datum.git ~/datum
+cd ~/datum && uv sync --all-groups
+
+# save Central's public key somewhere, then:
+.venv/bin/python bootstrap.py --public-key ~/services/central.pub
 ```
 
-You get three services — `victoria-metrics`, `vmauth` and `datum-api`:
+That writes the config, installs three services and starts them:
 
 ```
 ~/services/                     unit files and vmauth.yml, all generated
@@ -220,53 +216,58 @@ You get three services — `victoria-metrics`, `vmauth` and `datum-api`:
 ~/.local/share/datum/logs/      access.log, error.log, vmauth-*.log
 ```
 
-There is no env file. Each unit carries what it needs, and the public key stays
-a file on disk that both vmauth and datum-api read — so the two can never end
-up verifying against different keys.
-
 ```bash
 systemctl --user status datum-api
 tail -f ~/.local/share/datum/logs/access.log
 ```
 
-The unit sends stdout to `access.log` and stderr to `error.log`, which is how
-uvicorn splits them. They go to the files instead of the journal, and nothing
-rotates them — add a logrotate rule before they matter.
-
-Run it twice and nothing happens — it only restarts a service whose unit
+Run it twice and nothing happens. It only restarts a service whose config
 actually changed.
 
-One thing it does not do: install VictoriaMetrics or vmauth. It checks your PATH
-and tells you where to get them.
+**There is no env file.** Each unit carries what it needs, and the public key is
+a file on disk that vmauth and datum both read. They cannot end up checking
+tokens against different keys.
 
-Passing more than one of `--public-key`, `--oidc-issuer` and `--skip-verify` is
-a startup failure rather than a silent pick. So is pointing `--public-key` at a
-file that is not there — it fails before anything is written.
+It will not install VictoriaMetrics or vmauth for you. It checks your PATH and
+tells you where to get them.
 
-`--oidc-issuer` configures both sides: vmauth verifies writes against the
-fetched key set and datum-api verifies reads against the same one, refreshing
-every five minutes to match vmauth. Tokens must carry an `iss` matching the
-issuer exactly, which is what vmauth requires too.
+Three ways to check tokens, and you pick exactly one:
 
-While the issuer is unreachable, reads answer 401 rather than being let
-through. `--skip-verify` leaves reads closed on purpose: writes are open and
-reads are not, which is the shape a local testing mode should have.
+| Flag | What happens |
+|---|---|
+| `--public-key PATH` | both services read that PEM file |
+| `--oidc-issuer URL` | both fetch keys from the issuer, refreshing every 5 minutes |
+| `--skip-verify` | signatures are not checked at all. Local testing only |
+
+Passing two of them stops the script, as does pointing `--public-key` at a file
+that is not there. Neither gets past the point where anything is written.
+
+With `--oidc-issuer`, tokens must carry an `iss` that matches the issuer
+exactly. If the issuer is unreachable, reads answer 401 rather than letting
+anyone through. `--skip-verify` leaves reads shut while writes are open, which
+is the right shape for a testing mode.
+
+Other flags: `--dry-run` prints every file without writing it, and `--help`
+lists `--vmauth-listen`, `--datum-port`, `--retention`, `--config-dir`,
+`--data-dir`.
 
 **No HTTPS.** Tokens travel in plain text. Fine on loopback or a private
 network. Put a TLS proxy in front before real hosts push to it.
 
 ## Swapping the storage engine
 
-VictoriaMetrics is the only one that ships. But it plugs in through one small
-interface, so adding another is a new file, not a rewrite.
+Only for reads. Writes go from vmauth straight into VictoriaMetrics and never
+pass through this code, so a second engine would answer queries while writes
+kept landing somewhere else. Worth knowing before you reach for this.
+
+For reads, it plugs in through one small interface, so another engine is a new
+file rather than a rewrite:
 
 ```python
 from datum.api.internals.providers import MetricProvider
 
 
 class ClickHouseProvider(MetricProvider):
-    name = "clickhouse"
-
     def __init__(self, url, **options): ...
 
     def fetch(self, spec) -> list[dict]: ...

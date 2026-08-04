@@ -1,7 +1,7 @@
 # Agent Guide
 
-Datum is the telemetry service for the Frappe fleet. Producers push numbers, VictoriaMetrics
-stores them, and consumers read them back over SQL or PromQL.
+Datum is the telemetry service for the Frappe fleet. Producers push numbers through vmauth,
+VictoriaMetrics stores them, and consumers read them back over SQL.
 
 ## Main Rules
 
@@ -40,24 +40,26 @@ stores them, and consumers read them back over SQL or PromQL.
     - `paths.py` — where generated files and logs go
     - `vmauth.py` — `VmauthSettings` and the generated `-auth.config`
   - `api/app.py` — `create_app(settings, tokens)`; builds the provider once, at startup
-  - `api/dependencies.py` — `Store`, `Caller`
+  - `api/dependencies.py` — `Store`, and `get_identity`, the gate on the `/v1` mount
   - `api/errors.py` — validation failures that survive being serialised
   - `api/routes/` — thin routes, reads only; `/v1` and the auth gate are attached in one
     `include_router` call, so a new route is versioned and authenticated without saying so
   - `api/internals/schemas.py` — the published wire contract
   - `api/internals/auth.py` — `Identity`, `TokenVerifier`; JWT signature checking
   - `api/internals/store.py` — `MetricStore`, the facade routes call
-  - `api/internals/providers/` — `MetricProvider`, the registry, `VictoriaMetricsProvider`
+  - `api/internals/providers/` — `MetricProvider` and `VictoriaMetricsProvider`. Reads only
 - `bootstrap.py` — orchestration only: parse flags, render what `config/` describes, install,
   start. No defaults and no templates of its own. There is no env file: units carry what they
   need and the public key stays a file both vmauth and datum-api read, so the two cannot verify
-  against different keys.
-
-The vmauth config is the write path's whole security boundary, so its exact text is asserted in
-`tests/test_vmauth_config.py` rather than its shape.
-- `tests/conftest.py` — authenticated and anonymous clients
+  against different keys. `--config-only` skips systemd, which is how the stack runs on a Mac.
+- `tests/conftest.py` — a fixed test keypair, and authenticated and anonymous clients
 - `tests/test_planner.py`, `test_rows.py` — translation and row shaping
-- `tests/test_api.py`, `test_auth.py`, `test_providers.py`, `test_vmauth_config.py`
+- `tests/test_api.py`, `test_auth.py`, `test_key_loading.py`, `test_oidc.py`, `test_providers.py`
+- `tests/test_bootstrap.py`, `test_vmauth_config.py` — what gets generated
+
+The vmauth config is the write path's whole security boundary, so `test_vmauth_config.py` asserts
+its exact text rather than its shape. Local development lives in `.dev/`, which is gitignored so a
+test private key cannot be committed.
 
 `MetricProvider` retrieves only. Nothing in this service writes samples.
 
