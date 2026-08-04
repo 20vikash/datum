@@ -3,9 +3,8 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
-from fastapi.exceptions import RequestValidationError
 
-from datum.api.errors import handle_validation_error
+from datum.api import errors
 from datum.api.internals import MetricStore, TokenStore, get_provider
 from datum.api.routes import router
 from datum.config import Settings
@@ -46,7 +45,7 @@ def create_app(settings: Settings | None = None, tokens: TokenStore | None = Non
     app.state.settings = settings or Settings.from_env()
     app.state.tokens = tokens or TokenStore.from_env()
     app.state.store = None
-    app.add_exception_handler(RequestValidationError, handle_validation_error)
+    errors.install(app)
     app.include_router(router)
 
     @app.get("/health", include_in_schema=False)

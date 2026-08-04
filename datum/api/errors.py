@@ -2,12 +2,39 @@ from __future__ import annotations
 
 import math
 
-from fastapi import Request
+from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from datum.api.internals import LabelConflict, ProviderError
+from datum_sql import UnsupportedSQL
+
 UNPROCESSABLE = 422
+
+# Every failure a caller can cause, and what they are told. Anything absent is a
+# bug and becomes a 500 with a traceback, which is what we want.
+STATUS = {
+    UnsupportedSQL: 400,
+    LabelConflict: 400,
+    NotImplementedError: 501,
+    ProviderError: 503,
+}
+
+
+def install(app: FastAPI) -> None:
+    """Point every known failure at its status, so routes never catch."""
+    app.add_exception_handler(RequestValidationError, handle_validation_error)
+    for error in STATUS:
+        app.add_exception_handler(error, handle_known_error)
+
+
+async def handle_known_error(request: Request, error: Exception) -> JSONResponse:
+    """The exception message is already written for the caller."""
+    for kind, status in STATUS.items():
+        if isinstance(error, kind):
+            return JSONResponse(status_code=status, content={"detail": str(error)})
+    raise error
 
 
 def serialisable(value):
