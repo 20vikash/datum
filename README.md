@@ -84,23 +84,34 @@ are: the token's labels always win.
 ## Tokens
 
 Every call carries a JWT that Central signed: `Authorization: Bearer <jwt>`.
-
-Identity lives in the `vm_access` claim:
+A token needs exactly two things:
 
 ```json
-{"vm_access": {"metrics_extra_labels": ["tenant_id=acme", "source_id=pilot_1"]}}
+{
+  "scope": "datum",
+  "vm_access": {"metrics_extra_labels": ["resource_id=vm-abc123"]}
+}
 ```
 
-vmauth turns those into `extra_label` query args, and VictoriaMetrics writes
-them **over** whatever your body said:
+**`scope` says the token may write.** Central signs bench logins, site logins and
+enrolment tokens with the same key. Without a scope to match on, any of them
+would be accepted here. vmauth checks for `datum` and rejects the rest.
+
+**`resource_id` says where the metrics came from**, and it is the only label the
+token carries. One machine, one id. Everything else — which team owns it, which
+cluster it sits in — is Central's to answer, not a label on every sample.
+
+vmauth turns that into an `extra_label` query arg, and VictoriaMetrics writes it
+**over** whatever your body said:
 
 ```
-you send:    system_cpu_percent{host="a", tenant_id="someone_else"}
-gets stored: system_cpu_percent{host="a", tenant_id="acme", source_id="pilot_1"}
+you send:    system_cpu_percent{host="a", resource_id="someone_else"}
+gets stored: system_cpu_percent{host="a", resource_id="vm-abc123"}
 ```
 
-So claiming someone else's `tenant_id` does not work. Note that you get no error
-for trying — the label is quietly replaced, not refused.
+So a producer cannot claim another machine's id. Note you get no error for
+trying — the label is quietly replaced, not refused. Labels you send that the
+token does not fix, like `host`, are kept.
 
 Reads use the same token and the same key, so one token works on both doors.
 Signatures must be RSA or ECDSA. vmauth cannot check HMAC, so neither does
@@ -162,7 +173,8 @@ JWT=$(uv run --with 'pyjwt[crypto]' python -c "
 import jwt, time
 from pathlib import Path
 print(jwt.encode({'exp': int(time.time())+3600,
-  'vm_access': {'metrics_extra_labels': ['tenant_id=acme','source_id=pilot_1']}},
+  'scope': 'datum',
+  'vm_access': {'metrics_extra_labels': ['resource_id=vm-abc123']}},
   Path('.dev/central.key').read_text(), algorithm='RS256'))")
 
 # write, through vmauth
@@ -246,6 +258,12 @@ With `--oidc-issuer`, tokens must carry an `iss` that matches the issuer
 exactly. If the issuer is unreachable, reads answer 401 rather than letting
 anyone through. `--skip-verify` leaves reads shut while writes are open, which
 is the right shape for a testing mode.
+
+Separately, `--scope` decides *which* tokens may write. It defaults to `datum`
+and matches the token's `scope` claim, which is what keeps a bench login from
+being accepted as permission to push metrics. `--scope ''` drops the check and
+lets through anything Central's key signed — only useful before Central starts
+minting with a scope.
 
 Other flags: `--dry-run` prints every file without writing it, and `--help`
 lists `--vmauth-listen`, `--datum-port`, `--retention`, `--config-dir`,
@@ -332,7 +350,7 @@ A metric is a table. Its labels are the columns, plus `ts` and `value`. One
 from datum_sql import plan, shape
 
 spec = plan("""
-    SELECT source_id, ts, value
+    SELECT resource_id, ts, value
     FROM system_cpu_percent
     WHERE region = 'ap-south-1'
       AND ts > now() - INTERVAL 1 HOUR
@@ -358,7 +376,7 @@ PromQL cannot.
 | `WHERE ts > now() - INTERVAL 1 HOUR` | the query window |
 | `WHERE region = 'ap'` | `{region="ap"}` |
 | `WHERE region != 'ap'` | `{region!="ap"}` |
-| `WHERE source_id LIKE 'srv-%'` | `{source_id=~"srv-.*"}` |
+| `WHERE resource_id LIKE 'vm-%'` | `{resource_id=~"vm-.*"}` |
 | `WHERE region IN ('ap','us')` | `{region=~"ap\|us"}` |
 | `WHERE region REGEXP '^ap'` | `{region=~"^ap"}` |
 | `WHERE labels['region'] = 'ap'` | `{region="ap"}` (Presto style) |

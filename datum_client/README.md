@@ -246,17 +246,17 @@ quiet.
 
 ## The token decides who you are
 
-Your JWT carries a `vm_access` claim. vmauth turns it into labels and the store
-applies them **over** whatever you sent, so a label the token already fixes is
-overwritten rather than refused. Sending `tenant_id` will not get you an error
-— it will simply be ignored, which is what stops one host pretending to be
+Your JWT carries a `vm_access` claim holding one label: `resource_id`, the
+machine the metrics came from. vmauth passes it to the store, which applies it
+**over** whatever you sent. Sending your own `resource_id` will not get you an
+error — it is simply replaced, which is what stops one host reporting as
 another.
 
 ```python
 batch.gauge("cpu", 1.2, "percent", service="web")
 # stored as:
 # pilot_process_cpu_percent{service="web",region="ap_south_1",
-#                           tenant_id="acme",source_id="pilot_1"} 1.2
+#                           resource_id="vm-abc123"} 1.2
 ```
 
 ## Limits

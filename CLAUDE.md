@@ -94,10 +94,12 @@ read and storage there is nothing but the provider, which holds no logic of its 
 - Push down what reduces bytes fetched: metric name, time window, label matchers. Everything else
   is the caller's problem, deliberately.
 - Every query gets a time window. Unbounded means one hour, never all of retention.
-- Identity comes from the token, never the request body. On writes vmauth turns the JWT's
-  `vm_access.metrics_extra_labels` into `extra_label` args and VictoriaMetrics applies them over
-  whatever the body claimed, so a spoofed label loses. It is overridden, not refused — datum no
-  longer sees the payload, which is the price of keeping Python out of the write path.
+- Identity comes from the token, never the request body. A write token carries `scope: datum`
+  and one label, `resource_id`: vmauth matches the scope, then VictoriaMetrics applies the label
+  over whatever the body claimed. It is overridden, not refused — datum never sees the payload,
+  which is the price of keeping Python out of the write path.
+- One label, not a set. Which team owns a machine, or which cluster it sits in, is Central's to
+  answer; putting it on every sample makes it a fact frozen at write time.
 - Signatures are RSA or ECDSA. vmauth accepts nothing else, so datum must not either: the two
   disagreeing about what a valid token is would be the bug. The same applies to how the key is
   obtained — one `bootstrap.py` flag configures both, and `TokenVerifier` does the same discovery
