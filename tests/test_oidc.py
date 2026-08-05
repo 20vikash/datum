@@ -12,7 +12,7 @@ import jwt
 import pytest
 
 from datum.api.internals import TokenVerifier
-from datum.config.vmauth import ISSUER_VARIABLE, PUBLIC_KEY_FILE_VARIABLE
+from datum.config.vmauth import OIDC_ISSUER_VARIABLE, PUBLIC_KEY_PATH_VARIABLE
 from tests.conftest import CLAIMS, PUBLIC_KEY, mint, tamper
 
 KEY_ID = "central-1"
@@ -106,8 +106,8 @@ def test_a_discovery_document_without_jwks_uri_is_refused(issuer, monkeypatch):
 
 
 def test_the_issuer_reaches_the_verifier_from_the_unit(monkeypatch, issuer):
-    monkeypatch.delenv(PUBLIC_KEY_FILE_VARIABLE, raising=False)
-    monkeypatch.setenv(ISSUER_VARIABLE, issuer)
+    monkeypatch.delenv(PUBLIC_KEY_PATH_VARIABLE, raising=False)
+    monkeypatch.setenv(OIDC_ISSUER_VARIABLE, issuer)
 
     verifier = TokenVerifier.from_env()
 

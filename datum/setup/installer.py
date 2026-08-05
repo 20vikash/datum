@@ -5,7 +5,7 @@ from pathlib import Path
 
 from datum.config import units
 from datum.config.paths import LOGS, REPO, UVICORN
-from datum.config.vmauth import VmauthSettings, build_vmauth_config
+from datum.config.vmauth import VmauthSettings
 from datum.setup.options import Options
 from datum.setup.systemd import Systemd
 
@@ -18,7 +18,7 @@ BINARIES = {
 class Installer:
     """Renders what `datum.config` describes, then puts it on the host.
 
-    Nothing is written until `install` or `write_config` is called, so a bad
+    Nothing is written until `install` or `write_vmauth_config` is called, so a bad
     key path or an ambiguous verification choice fails while it is still cheap.
     """
 
@@ -29,11 +29,6 @@ class Installer:
     @property
     def vmauth(self) -> VmauthSettings:
         return self.options.vmauth
-
-    @property
-    def config(self) -> str:
-        """The vmauth auth config: the whole write-path security boundary."""
-        return build_vmauth_config(self.vmauth)
 
     def find_binary(self, name: str, required: bool = True) -> str:
         """A preview only prints, so it names the binary rather than refusing
@@ -92,13 +87,13 @@ class Installer:
 
     def preview(self) -> None:
         """Print every file, write none of them."""
-        print(f"--- {self.options.vmauth_config} ---\n{self.config}")
+        print(f"--- {self.options.vmauth_config} ---\n{self.vmauth.config}")
         for name, unit in self.units(required=False).items():
             print(f"--- {self.options.config_dir / f'{name}.service'} ---\n{unit}")
 
-    def write_config(self) -> bool:
-        """The vmauth config on its own. All `--config-only` needs."""
-        return self.write_once(self.options.vmauth_config, self.config, mode=0o600)
+    def write_vmauth_config(self) -> bool:
+        """The auth config on its own. All `--config-only` needs."""
+        return self.write_once(self.options.vmauth_config, self.vmauth.config, mode=0o600)
 
     def install(self) -> None:
         """Write everything, then hand the changed set to systemd."""
@@ -117,7 +112,7 @@ class Installer:
                 changed.add(name)
             print(f"{'Installed' if written or linked else 'Unchanged'} {name} -> {path}")
 
-        if self.write_config():
+        if self.write_vmauth_config():
             changed.add("vmauth")
             print(f"Installed vmauth config ({self.vmauth.mode})")
 
@@ -143,7 +138,7 @@ class Installer:
             self.preview()
             return
         if self.options.config_only:
-            self.write_config()
+            self.write_vmauth_config()
             print(f"Wrote {self.options.vmauth_config} ({self.vmauth.mode})")
             return
         self.install()
