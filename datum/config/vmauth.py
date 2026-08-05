@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from string import Template
 
 # What a producer may reach. Query paths are deliberately absent: a token that
 # can write must not be able to read every tenant's series.
@@ -31,6 +32,7 @@ class VmauthSettings:
     oidc_issuer: str = ""
     skip_verify: bool = False
     write_paths: tuple[str, ...] = WRITE_PATHS
+    scope: str = "datum"
 
     @property
     def mode(self) -> str:
@@ -75,24 +77,27 @@ class VmauthSettings:
         return ""
 
 
-# vmauth reads `vm_access.metrics_extra_labels` off the token and VictoriaMetrics
-# applies them over whatever the producer sent, so a spoofed tenant_id loses.
-EXTRA_LABELS = "{{.MetricsExtraLabels}}"
+CONFIG = Template("""# Written by bootstrap.py. Re-run it to change this; edits here are lost.
+users:
+- jwt:
+$verification$match_claims  url_map:
+  - src_paths:
+$write_paths    url_prefix: "$upstream/?extra_label={{.MetricsExtraLabels}}"
+""")
+
+OIDC_KEYS = Template('    oidc:\n      issuer: "$issuer"\n')
+KEY_FILE = Template('    public_key_files:\n    - "$path"\n')
+NO_VERIFICATION = "    skip_verify: true\n"
+MATCH_CLAIMS = Template('    match_claims:\n      scope: "$scope"\n')
 
 
 def build_vmauth_config(settings: VmauthSettings) -> str:
     """The whole `-auth.config`, from one set of settings."""
-    return "".join(
-        [
-            "# Written by bootstrap.py. Re-run it to change this; edits here are lost.\n",
-            "users:\n",
-            "- jwt:\n",
-            _verification(settings),
-            "  url_map:\n",
-            "  - src_paths:\n",
-            *(f'    - "{path}"\n' for path in settings.write_paths),
-            f'    url_prefix: "{_upstream(settings)}"\n',
-        ]
+    return CONFIG.substitute(
+        verification=_verification(settings),
+        match_claims=MATCH_CLAIMS.substitute(scope=settings.scope) if settings.scope else "",
+        write_paths="".join(f'    - "{path}"\n' for path in settings.write_paths),
+        upstream=settings.victoria_url.rstrip("/"),
     )
 
 
@@ -100,11 +105,7 @@ def _verification(settings: VmauthSettings) -> str:
     """The one block that decides whether a signature is checked."""
     mode = settings.mode
     if mode == OIDC:
-        return f'    oidc:\n      issuer: "{settings.oidc_issuer}"\n'
+        return OIDC_KEYS.substitute(issuer=settings.oidc_issuer)
     if mode == PUBLIC_KEY:
-        return f'    public_key_files:\n    - "{settings.public_key_path}"\n'
-    return "    skip_verify: true\n"
-
-
-def _upstream(settings: VmauthSettings) -> str:
-    return f"{settings.victoria_url.rstrip('/')}/?extra_label={EXTRA_LABELS}"
+        return KEY_FILE.substitute(path=settings.public_key_path)
+    return NO_VERIFICATION

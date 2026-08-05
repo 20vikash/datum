@@ -26,6 +26,8 @@ def test_public_key_config_is_exact():
         "- jwt:\n"
         "    public_key_files:\n"
         '    - "/home/frappe/services/central.pub"\n'
+        "    match_claims:\n"
+        '      scope: "datum"\n'
         "  url_map:\n"
         "  - src_paths:\n"
         '    - "/api/v1/write"\n'
@@ -75,3 +77,21 @@ def test_a_trailing_slash_on_the_store_does_not_double_up():
 def test_skip_verify_reports_that_it_is_not_verifying():
     assert settings(skip_verify=True).is_verifying is False
     assert settings(public_key_path=KEY_PATH).is_verifying is True
+
+
+def test_the_scope_gates_which_tokens_may_write():
+    """Central signs bench and enrolment tokens with the same key as datum's."""
+    written = build(settings(public_key_path=KEY_PATH))
+
+    assert '    match_claims:\n      scope: "datum"\n' in written
+
+
+def test_match_claims_is_a_sibling_of_the_key_block_not_a_child():
+    """vmauth has no match_claims inside `oidc`; nesting it is a startup failure."""
+    written = build(settings(oidc_issuer="https://central.example.com"))
+
+    assert '      issuer: "https://central.example.com"\n    match_claims:\n' in written
+
+
+def test_an_empty_scope_accepts_anything_the_key_signed():
+    assert "match_claims" not in build(settings(public_key_path=KEY_PATH, scope=""))

@@ -119,3 +119,18 @@ def test_rewriting_identical_config_reports_no_change(key, tmp_path):
     )
     assert Installer(options).write_config() is True
     assert Installer(options).write_config() is False
+
+
+def test_the_scope_flag_reaches_the_vmauth_config(key):
+    built = installer("--public-key", str(key), "--scope", "metrics")
+
+    assert '      scope: "metrics"\n' in built.config
+
+
+def test_the_scope_defaults_to_datum(key):
+    assert '      scope: "datum"\n' in installer("--public-key", str(key)).config
+
+
+def test_an_empty_scope_drops_the_match(key):
+    """Every token the key signed may then write, which is rarely what you want."""
+    assert "match_claims" not in installer("--public-key", str(key), "--scope", "").config
