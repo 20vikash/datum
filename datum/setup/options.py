@@ -30,6 +30,7 @@ class Options:
     public_key: Path | None = None
     oidc_issuer: str = ""
     skip_verify: bool = False
+    scope: str = VmauthSettings.scope
     victoria_listen: str = VictoriaSettings.listen
     vmauth_listen: str = VmauthSettings.listen
     datum_host: str = ApiSettings.host
@@ -71,6 +72,7 @@ class Options:
             public_key_path=self.public_key,
             oidc_issuer=self.oidc_issuer,
             skip_verify=self.skip_verify,
+            scope=self.scope,
         )
         settings.mode  # noqa: B018 -- raises on a missing or ambiguous choice
         return settings
@@ -103,6 +105,13 @@ def _parser() -> argparse.ArgumentParser:
         "--skip-verify",
         action="store_true",
         help="Accept unsigned tokens. Local testing only: anyone can write as anyone.",
+    )
+    verification.add_argument(
+        "--scope",
+        default=default.scope,
+        help="Which tokens may write, matched on the JWT's `scope` claim. Central signs "
+        "bench and enrolment tokens with the same key, so without this any of them "
+        "could push metrics. Empty accepts anything that key signed.",
     )
 
     parser.add_argument("--victoria-listen", default=default.victoria_listen)

@@ -9,7 +9,7 @@ from pathlib import Path
 
 import jwt
 
-from datum.config.vmauth import ISSUER_VARIABLE, PUBLIC_KEY_FILE_VARIABLE
+from datum.config.vmauth import OIDC_ISSUER_VARIABLE, PUBLIC_KEY_PATH_VARIABLE
 
 ACCESS_CLAIM = "vm_access"
 LABELS_CLAIM = "metrics_extra_labels"
@@ -63,14 +63,14 @@ class TokenVerifier:
         A key path that is set but unreadable is a startup failure, never a
         service that silently answers 401 to everyone.
         """
-        location = os.environ.get(PUBLIC_KEY_FILE_VARIABLE)
-        issuer = os.environ.get(ISSUER_VARIABLE)
+        location = os.environ.get(PUBLIC_KEY_PATH_VARIABLE)
+        issuer = os.environ.get(OIDC_ISSUER_VARIABLE)
         if not location:
             return cls(oidc_issuer=issuer)
 
         path = Path(location)
         if not path.is_file():
-            raise RuntimeError(f"{PUBLIC_KEY_FILE_VARIABLE} is {location}, which is not a file.")
+            raise RuntimeError(f"{PUBLIC_KEY_PATH_VARIABLE} is {location}, which is not a file.")
         return cls(public_key=path.read_text(), oidc_issuer=issuer)
 
     @property
