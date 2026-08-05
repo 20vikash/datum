@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from datum.api import errors
-from datum.api.internals import ClickHouseProvider, MetricProvider, MetricStore, TokenVerifier
+from datum.api.internals import ClickHouseProvider, MetricProvider, TokenVerifier
 from datum.api.routes import router
 from datum.config import Settings
 
@@ -34,11 +34,9 @@ def get_provider(settings: Settings) -> MetricProvider:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    store = MetricStore(app.state.provider or get_provider(app.state.settings))
-    store.ensure_schema()
-    app.state.store = store
+    app.state.provider = app.state.provider or get_provider(app.state.settings)
+    app.state.provider.ensure_schema()
     yield
-    app.state.store = None
 
 
 def create_app(
@@ -63,7 +61,6 @@ def create_app(
     app.state.settings = settings or Settings.from_env()
     app.state.tokens = tokens or TokenVerifier.from_env()
     app.state.provider = provider
-    app.state.store = None
     errors.install(app)
     app.include_router(router)
 

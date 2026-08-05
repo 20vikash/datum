@@ -1,14 +1,43 @@
 from __future__ import annotations
 
-from fastapi import APIRouter
+from typing import Annotated
 
-from datum.api.dependencies import Store, Writer
-from datum.api.internals.schemas import IngestResponse, SamplesRequest
+from fastapi import APIRouter, Body, Header, HTTPException, Response, status
+
+from datum.api.dependencies import Provider, Writer
+from datum.api.internals.remote import CONTENT_TYPE, decode, is_version_two
+from datum.api.internals.schemas import IngestResponse, Sample, SamplesRequest
 
 router = APIRouter(tags=["ingest"])
 
 
 @router.post("/ingest")
-def ingest(body: SamplesRequest, store: Store, resource_id: Writer) -> IngestResponse:
+def ingest(body: SamplesRequest, provider: Provider, resource_id: Writer) -> IngestResponse:
     """Stamp every row with the token's resource_id, then write the batch."""
-    return IngestResponse(accepted=store.ingest(body.samples, resource_id))
+    return IngestResponse(accepted=provider.ingest(get_rows(body.samples, resource_id)))
+
+
+@router.post("/ingest/remote", status_code=status.HTTP_204_NO_CONTENT)
+def remote(
+    body: Annotated[bytes, Body(media_type=CONTENT_TYPE)],
+    provider: Provider,
+    resource_id: Writer,
+    content_type: str = Header(default=CONTENT_TYPE),
+) -> Response:
+    """Prometheus remote write. Same rules, a different wrapper.
+
+    Sync like every other route: writing blocks, so it belongs in the threadpool
+    rather than on the event loop. 204 with no body, because that is what a
+    remote write client expects and retries on anything else.
+    """
+    if is_version_two(content_type):
+        raise HTTPException(
+            status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail="Remote write v2 is not read here; send v1.",
+        )
+    provider.ingest(decode(body, resource_id))
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+def get_rows(samples: list[Sample], resource_id: str) -> list[dict]:
+    return [sample.get_row(resource_id) for sample in samples]

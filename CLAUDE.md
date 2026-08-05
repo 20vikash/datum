@@ -1,26 +1,32 @@
 # Agent Guide
 
-Datum is the telemetry service for the Frappe fleet. Producers push numbers through vmauth,
-VictoriaMetrics stores them, and consumers read them back over SQL.
+Datum is the telemetry service for the Frappe fleet. Producers push numbers at the API,
+ClickHouse stores them, and consumers read them back with SQL.
 
 ## Main Rules
 
-- **VictoriaMetrics is the only storage engine that ships.** There is one escape hatch and it is
+- **ClickHouse is the only storage engine that ships.** There is one escape hatch and it is
   narrow: `MetricProvider` in `datum/api/internals/providers/base.py`. Supporting another store
   means writing a provider and pointing `app.py` at it — never widening the interface, never
   branching on the backend anywhere else in the service. There is no registry and no
   `DATUM_BACKEND`: selecting between engines was cost with no buyer.
-- **A provider retrieves. It does not query, and it does not write.** Selector translation lives in
-  `datum_sql`, row shaping in `datum_sql.shape()`. A provider that starts interpreting SQL is a
-  second query engine, which is what the seam exists to prevent.
-- **There is no queue, and no write path in Python.** Producers POST to vmauth, which verifies
-  the JWT and proxies to VictoriaMetrics. Do not reintroduce Redis, a consumer process, a spool
-  file, or an ingest route on the API.
+- **A provider carries no logic.** It runs the SQL it is handed and writes the rows it is
+  handed. There is no facade over it: routes depend on `MetricProvider` directly.
+- **There are two write paths, and they build rows differently on purpose.** JSON goes through
+  `Sample`, which validates and renders itself with `get_row(resource_id)`. Remote write does
+  not: a metric and its labels belong to the series, so `decode` checks them once per series
+  and builds rows directly, rather than validating the same strings once per reading. The cost
+  is that `NAME` is enforced in two places — `schemas.Sample` and `remote._series`. Change the
+  name rule and you change both, or the paths disagree about what is storable.
+- **Reads are passed through, not translated.** ClickHouse speaks SQL, so datum does not
+  interpret it. There is no planner and no refusal list. What constrains a read is applied by
+  ClickHouse — `readonly=1`, a row cap, a timeout — never by parsing SQL in Python.
 - **Numbers only.** Datum stores metrics. Slow queries, request traces, and anything with free
   text belong somewhere else.
-- **`datum_sql` is a standalone package.** It must never import from the service, and must stay
-  installable and useful on its own against any Prometheus-compatible store.
-- Keep API routes thin. Behaviour lives in modules the routes call.
+- **Insights connects to ClickHouse directly**, with its own read-only user. `/v1/query` exists
+  for callers that are not Insights. Do not build a BI integration through the API.
+- Keep API routes thin. Behaviour lives in modules the routes call — but do not add a layer
+  that only forwards. A facade earns its place by holding logic, not by existing.
 - Group related files in folders rather than adding many same-prefix modules.
 - Keep comments short. Remove comments that restate the code.
 - No comment block at the top of a file. Use a short class or method docstring instead.
@@ -28,102 +34,81 @@ VictoriaMetrics stores them, and consumers read them back over SQL.
 
 ## What Exists Today
 
-- `datum_sql/` — SQL to PromQL translator. Pure: it opens no sockets.
-  - `spec.py` — `QuerySpec`, `Matcher`, `UnsupportedSQL`
-  - `planner.py` — SQL to `QuerySpec`; `_translate_predicate` is where every WHERE branch is decided
-  - `rows.py` — `shape()`, `Result`; projection, ORDER BY and LIMIT over rows the caller fetched
 - `datum/` — the service.
-  - `config/` — every default and every generated file lives here, nothing hardcoded elsewhere
-    - `api.py` — `Settings.from_env()`; the store URL, read from the unit's `Environment=`
-    - `victoria.py` — retention, memory, the cardinality limiter
-    - `units.py` — the systemd units, and where the API listens
-    - `paths.py` — where generated files and logs go
-    - `vmauth.py` — `VmauthSettings` and the generated `-auth.config`
-  - `api/app.py` — `create_app(settings, tokens)`; builds the provider once, at startup
-  - `api/dependencies.py` — `Store`, and `get_identity`, the gate on the `/v1` mount
-  - `api/errors.py` — validation failures that survive being serialised
-  - `api/routes/` — thin routes, reads only; `/v1` and the auth gate are attached in one
-    `include_router` call, so a new route is versioned and authenticated without saying so
-  - `api/internals/schemas.py` — the published wire contract
+  - `config/` — every default lives here, nothing hardcoded elsewhere
+    - `api.py` — `Settings.from_env()`; how to reach ClickHouse, and the read caps
+    - `clickhouse.py` — the one table's DDL, its column order, and `resource_id`'s name
+  - `api/app.py` — `create_app(settings, tokens, provider)`; builds the provider once, at
+    startup, and creates the schema if it is missing
+  - `api/dependencies.py` — `Provider`, `Caller`, `Reader`, `Writer`; the gates on `/v1`
+  - `api/errors.py` — every failure a caller can cause, mapped to its status
+  - `api/routes/v1/` — `query.py` and `ingest.py`, mounted in `v1/__init__.py`
+  - `api/internals/schemas.py` — the published wire contract, and `Sample.get_row`
   - `api/internals/auth.py` — `Identity`, `TokenVerifier`; JWT signature checking
-  - `api/internals/store.py` — `MetricStore`, the facade routes call
-  - `api/internals/providers/` — `MetricProvider` and `VictoriaMetricsProvider`. Reads only
-  - `setup/` — putting the above on a host. `bootstrap.py` at the root is nineteen lines that
-    call into it.
-    - `options.py` — `Options`, the parsed command line, already resolved and checked
-    - `installer.py` — `Installer`; renders, writes, and hands the changed set to systemd
-    - `systemd.py` — `Systemd`, the only part that needs Linux
-- There is no env file: units carry what they need and the public key stays a file both vmauth
-  and datum-api read, so the two cannot verify against different keys. `--config-only` skips
-  systemd entirely, which is how the stack runs on a Mac.
-- `tests/conftest.py` — a fixed test keypair, and authenticated and anonymous clients
-- `tests/test_planner.py`, `test_rows.py` — translation and row shaping
-- `tests/test_api.py`, `test_auth.py`, `test_key_loading.py`, `test_oidc.py`, `test_providers.py`
-- `tests/test_bootstrap.py`, `test_vmauth_config.py` — what gets generated
+  - `api/internals/providers/` — `MetricProvider` and `ClickHouseProvider`
+  - `api/internals/remote/` — Prometheus remote write v1: snappy off, protobuf out, rows in.
+    `decode(body, resource_id)` returns table rows, not `Sample`s. The `_pb2.py` is generated;
+    regenerate it rather than editing it, and ruff skips it
+- `datum_client/` — what producers import. Standard library only, and it must never import from
+  the service.
+- `tests/conftest.py` — a fixed test keypair, a `FakeProvider`, and authenticated and
+  anonymous clients
+- `tests/test_api.py`, `test_ingest.py`, `test_remote_write.py`, `test_providers.py`
+- `tests/test_auth.py`, `test_key_loading.py`, `test_oidc.py`
 
-The vmauth config is the write path's whole security boundary, so `test_vmauth_config.py` asserts
-its exact text rather than its shape. Local development lives in `.dev/`, which is gitignored so a
-test private key cannot be committed.
-
-`MetricProvider` retrieves only. Nothing in this service writes samples.
-
-## Planned Layout
-
-- `datum/beacon/` — rule evaluation and alert delivery. A second process, and it needs a provider
-  too, so anything it shares with the API belongs beside the provider rather than inside `api/`.
+There is no installer and no systemd unit. datum-api is one process, run however the host
+already runs things; ClickHouse is installed the way its own docs say.
 
 ## Shape
 
 ```
-producers ──JWT──▶ vmauth ──extra_label──▶ VictoriaMetrics
-                                                 ▲
-                     datum-api ──▶ MetricProvider┤ reads only
-                          ▲                      │
-                     Insights ── via datum_sql   │
-                                                 │
-                     datum-beacon ───────────────┘ evaluates rules
+producers ──JWT──▶ datum-api ──▶ ClickHouse
+                        ▲             ▲
+Insights ───────────────┼─────────────┘ read-only user, direct
+                        │
+datum-beacon ───────────┘ evaluates rules
 ```
 
-Three processes: `vmauth`, `datum-api` and `datum-beacon`. Writes never reach Python. Between a
-read and storage there is nothing but the provider, which holds no logic of its own.
+## Planned Layout
+
+- `datum/beacon/` — rule evaluation and alert delivery. A second process, and it needs a
+  provider too, so anything it shares with the API belongs beside the provider rather than
+  inside `api/`.
 
 ## Design Expectations
 
-- One SELECT becomes one PromQL query. If a query needs two, refuse it by name rather than
-  guessing — see `REFUSED` in `planner.py`.
-- Push down what reduces bytes fetched: metric name, time window, label matchers. Everything else
-  is the caller's problem, deliberately.
-- Every query gets a time window. Unbounded means one hour, never all of retention.
-- Identity comes from the token, never the request body. A write token carries `scope: datum`
-  and one label, `resource_id`: vmauth matches the scope, then VictoriaMetrics applies the label
-  over whatever the body claimed. It is overridden, not refused — datum never sees the payload,
-  which is the price of keeping Python out of the write path.
+- **Identity comes from the token, never the request body.** The token carries `resource_id`,
+  which datum stamps on every row, and `access`, which says whether it may read, write or both.
+  A `resource_id` in the body is dropped, not honoured, and there is no field for it in the
+  wire schema. A token that may write but names no `resource_id` is refused outright.
 - One label, not a set. Which team owns a machine, or which cluster it sits in, is Central's to
   answer; putting it on every sample makes it a fact frozen at write time.
-- Signatures are RSA or ECDSA. vmauth accepts nothing else, so datum must not either: the two
-  disagreeing about what a valid token is would be the bug. The same applies to how the key is
-  obtained — one `bootstrap.py` flag configures both, and `TokenVerifier` does the same discovery
-  vmauth does, refreshing on the same five minutes.
-- Auth attaches to the `/v1` mount, not to individual routes, so a new route is authenticated by
-  default. It resolves before validation, so a stranger sending nonsense gets 401 and learns
+- Signatures are RSA or ECDSA. HMAC is never accepted.
+- Auth attaches to the `/v1` mount, not to individual routes, so a new route is authenticated
+  by default. It resolves before validation, so a stranger sending nonsense gets 401 and learns
   nothing about the schema.
+- What a token may *do* is asked for by name: a route takes `Reader` or `Writer` as an
+  argument. Both are visible in the signature, so a route never gets its permissions from
+  somewhere else in the file tree. A new route that asks for neither is authenticated but
+  ungated — read the signature.
 - A second storage engine is a new file in `providers/` and one changed line in `app.py`. If it
   needs anything else, the seam is wrong and that is the bug to fix.
+- Fail loudly and near the bug. An unreachable store is a 503, a query ClickHouse refused is a
+  400, and neither is ever an empty result set.
 
 ## Facts That Constrain Design
 
-Measured on 8 vCPU / 15.7 GB, and worth not rediscovering:
-
-- VictoriaMetrics absorbs 633k rows/s at 76 rows per request across 64 connections, zero errors.
-  Small frequent writes are fine; this is why there is no queue.
-- It reserves 60% of RAM for caches by default. Cap it with `-memory.allowedPercent`, and note
-  that the percentage applies to the cgroup limit when one exists, not host RAM.
-- Storage runs about 3.1 bytes per sample.
-- Filtering on a label is an index hit. Filtering on `value` is impossible in a selector.
-- `query_range` resamples onto a fixed grid and carries values forward — 9 stored samples came
-  back as 114 rows. Use raw mode when the caller wants what is stored.
-- Losing VictoriaMetrics loses in-flight data. That is accepted. If durability is ever needed,
-  add `vmagent` rather than building a queue.
+- The table is `ORDER BY (resource_id, metric, ts)`. A read that filters on none of those scans
+  everything; that is the cost of one wide table, and the right trade for a fleet whose queries
+  always name a machine.
+- `labels` is a `Map`. Filtering on a map key is not an index hit the way a sort key is. If a
+  label becomes hot enough to matter, promote it to a column rather than adding an index.
+- `Delta` on the timestamp and `Gorilla` on the value are doing most of the compression. Do not
+  drop the codecs.
+- There is no TTL. Nothing expires on its own, so cardinality is a permanent cost, not one that
+  retention eventually clears.
+- Losing ClickHouse loses in-flight data. That is accepted. There is no queue, no spool file
+  and no retry, because blocking a producer's collection tick is worse than a gap in a chart.
 
 ## Code Taste
 
@@ -133,12 +118,12 @@ Measured on 8 vCPU / 15.7 GB, and worth not rediscovering:
 - Keep cyclomatic complexity <= 8.
 - Keep files between 100 and 500 lines when practical.
 - Avoid abbreviations.
-- Use standard APIs and existing helpers before adding custom logic.
+- Use standard APIs and existing helpers before adding custom logic. Reach for a library before
+  hand-rolling a parser.
 - Delete before adding when existing code can be simplified.
-- Fail loudly near the bug. Do not hide a bad translation behind a fallback that returns rows.
 - For a no-argument method returning one noun-like value, use `@property`.
 - For methods with arguments or multi-step work, use `get_<what_it_returns>()`.
-- Name boolean-returning members with `is_` or `has_`.
+- Name boolean-returning members with `is_`, `has_` or `can_`.
 - Default to public methods. Use a leading underscore for raw parsing, security-sensitive
   validation, or genuinely internal details.
 - Always add or update tests for behaviour changes, and make sure they pass.
@@ -147,12 +132,16 @@ Measured on 8 vCPU / 15.7 GB, and worth not rediscovering:
 
 - The environment is managed by `uv`. Use `uv run`, `uv add`, `uv sync`.
 - Run `uv run pytest` and `uv run ruff check .` after changes.
-- A translation change needs a test in `tests/test_planner.py` asserting the exact PromQL string.
-- Verify against a real server with `uv run python tests/live_check.py <url>` before believing a
-  translation works. An empty PromQL result is fast and reports success.
+- A schema change needs a matching change in `COLUMNS`, and a test asserting the insert order.
+- Both write paths cap a batch at `MAX_BATCH`. Remote write counts from the protobuf before
+  building anything, so an oversized request costs the parse and answers 413.
+- Construction must open no sockets. The provider connects on first use, so tests and startup
+  do not depend on ClickHouse being up.
+- Routes are `def`, not `async def`. Every store call blocks, so it belongs in the threadpool
+  rather than on the event loop; take a raw body with `Body`, never `await request.body()`.
 - For bug fixes, identify the root cause before attempting a fix.
 
 ## Docs
 
-Keep `README.md` current with the SQL to PromQL mapping table. It is the first thing a user of
-`datum_sql` reads, and the mapping is the whole contract.
+Keep `README.md` current: the endpoint table, the table definition and the token claims are the
+whole contract, and they are the first thing a user reads.

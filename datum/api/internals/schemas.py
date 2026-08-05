@@ -5,6 +5,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field, field_validator
 
+from datum.config.clickhouse import RESOURCE_LABEL
+
 NAME = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 MAX_BATCH = 10_000
 
@@ -43,6 +45,17 @@ class Sample(BaseModel):
         if unusable:
             raise ValueError(f"label names must match {NAME.pattern}: {', '.join(unusable)}")
         return labels
+
+    def get_row(self, resource_id: str) -> dict:
+        """One table row. The token owns `resource_id`, so a claimed one is dropped."""
+        labels = {name: value for name, value in self.labels.items() if name != RESOURCE_LABEL}
+        return {
+            "ts": self.ts,
+            "metric": self.metric,
+            RESOURCE_LABEL: resource_id,
+            "labels": labels,
+            "value": self.value,
+        }
 
 
 class SamplesRequest(BaseModel):

@@ -23,6 +23,7 @@ def test_the_published_routes(client):
 
     assert sorted(paths) == [
         "/v1/ingest",
+        "/v1/ingest/remote",
         "/v1/metrics",
         "/v1/metrics/{metric}/columns",
         "/v1/query",

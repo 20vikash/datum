@@ -32,7 +32,7 @@ class Batch:
         return self._add(build(self.namespace, self.subsystem, target, unit), value, ts, labels)
 
     def counter(self, target: str, value: float, unit: str = "", ts=None, **labels) -> Batch:
-        """A value that only climbs. Gets `_total`, so PromQL can rate() it."""
+        """A value that only climbs. Gets `_total`, so a reader knows to diff it."""
         name = build(self.namespace, self.subsystem, target, unit, "total")
         return self._add(name, value, ts, labels)
 
@@ -69,26 +69,14 @@ class Datum:
     A dropped metric is a gap in a chart. Blocking a producer's collection tick
     to retry one is worse, so `send` never raises on a network failure.
 
-    `url` is vmauth, not the datum API. `token` is a JWT whose `vm_access` claim
-    carries the identity; vmauth stamps it, so nothing here sets tenant_id.
+    `token` is a JWT that names a `resource_id`; datum stamps every row with it,
+    so nothing here says where the samples came from.
     """
 
     def __init__(self, url: str, token: str, timeout: float = TIMEOUT):
         self.url = url.rstrip("/")
         self.token = token
         self.timeout = timeout
-
-    @staticmethod
-    def render(sample: dict) -> str:
-        """One VictoriaMetrics JSON import line: the metric name is a label."""
-        moment = datetime.fromisoformat(sample["ts"].replace("Z", "+00:00"))
-        return json.dumps(
-            {
-                "metric": {"__name__": sample["metric"], **sample["labels"]},
-                "values": [sample["value"]],
-                "timestamps": [int(moment.timestamp() * 1000)],
-            }
-        )
 
     def send(self, *batches: Batch) -> int:
         """Post one or more batches as a single request.
@@ -104,8 +92,8 @@ class Datum:
             raise ValueError(f"{len(samples)} samples, but a request holds {MAX_SAMPLES}")
 
         request = urllib.request.Request(
-            f"{self.url}/api/v1/import",
-            data="\n".join(self.render(sample) for sample in samples).encode(),
+            f"{self.url}/v1/ingest",
+            data=json.dumps({"samples": samples}).encode(),
             method="POST",
         )
         request.add_header("Content-Type", "application/json")

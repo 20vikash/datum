@@ -6,13 +6,11 @@ from datum.api.internals.providers import (
     QueryRefused,
     Rows,
 )
-from datum.api.internals.store import MetricStore
 
 __all__ = [
     "ClickHouseProvider",
     "Identity",
     "MetricProvider",
-    "MetricStore",
     "ProviderError",
     "QueryRefused",
     "Rows",

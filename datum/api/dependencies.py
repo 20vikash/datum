@@ -5,14 +5,14 @@ from typing import Annotated
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-from datum.api.internals import Identity, MetricStore
+from datum.api.internals import Identity, MetricProvider
 
 bearer = HTTPBearer(auto_error=False, description="JWT minted by Central.")
 
 
-def get_store(request: Request) -> MetricStore:
-    """The store built at startup."""
-    return request.app.state.store
+def get_provider(request: Request) -> MetricProvider:
+    """The provider built at startup. Routes talk to it directly."""
+    return request.app.state.provider
 
 
 def get_identity(
@@ -47,6 +47,6 @@ def get_writer(identity: Caller) -> str:
     return identity.resource_id
 
 
-Store = Annotated[MetricStore, Depends(get_store)]
+Provider = Annotated[MetricProvider, Depends(get_provider)]
 Reader = Annotated[Identity, Depends(get_reader)]
 Writer = Annotated[str, Depends(get_writer)]

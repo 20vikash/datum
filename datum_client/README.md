@@ -7,7 +7,7 @@ Standard library only. Nothing from the Datum service. No extra installs.
 ```python
 from datum_client import Batch, Datum
 
-datum = Datum("https://vmauth.internal:8427", token=DATUM_JWT)
+datum = Datum("https://datum.internal:8000", token=DATUM_JWT)
 
 memory = Batch("system", "memory")
 memory.gauge("used", 1154545090, "bytes")
@@ -58,7 +58,7 @@ changes. That is what keeps names the same everywhere.
 | Method | Adds | Use for |
 |---|---|---|
 | `gauge` | nothing | goes up and down: a size, a percent, a queue depth |
-| `counter` | `_total` | only goes up, so PromQL can `rate()` it |
+| `counter` | `_total` | only goes up, so a reader knows to diff it |
 | `up` | `_up` | 1 alive, 0 dead |
 | `info` | `_info` | always 1, facts sit in the labels |
 
@@ -141,7 +141,7 @@ So one label costs you its number of different values:
 Same 500 numbers. The second one is 500 times more expensive.
 
 When a process restarts, the old series is not updated. It is left behind,
-still indexed, holding a few old numbers, until retention deletes it.
+holding a few old numbers. Nothing expires, so it is left behind for good.
 
 These labels are rejected: `pid`, `container_id`, `request_id`, `trace_id`,
 `uuid`.
@@ -166,9 +166,13 @@ If nothing looks up pid, do not send it. A pid only matters while the process
 is alive, and the host can tell you that.
 
 This list is only names someone thought of. `worker_pid`, `job_id`, `session`
-and `sha` get through. The real safety net is on the server:
-`-storage.maxHourlySeries`, plus `/api/v1/status/tsdb` to see which label is
-growing.
+and `sha` get through. To see which label is growing, ask the store:
+
+```sql
+SELECT arrayJoin(mapKeys(labels)) AS label, uniq(labels[label]) AS values
+FROM datum.samples WHERE metric = 'pilot_process_cpu_percent'
+GROUP BY label ORDER BY values DESC
+```
 
 Label names must be lowercase with underscores. Labels on `Batch(...)` are
 checked too, when you make it.
@@ -225,6 +229,11 @@ status = datum.send(system, memory, cpu)   # still one POST
 Fire and forget. One POST, 2 second timeout, no retry, no queue on disk.
 A lost metric is a gap in a chart. Blocking the producer to retry is worse.
 
+If you already run vmagent, Prometheus or an OTel collector, you do not need
+this client at all — point its `remote_write` at `/v1/ingest/remote` instead.
+Same token, same rules. This client exists for producers that have numbers in
+hand and no agent to hand them to.
+
 - Network failure does **not** raise. You get `0`.
 - You get the HTTP status back. Watch for `401` and `422` — those are bugs, not
   blips. Both are logged as warnings on the `datum` logger.
@@ -235,9 +244,12 @@ A lost metric is a gap in a chart. Blocking the producer to retry is worse.
 
 | Status | What happened |
 |---|---|
-| 204 | stored |
-| 400 | the body was not valid JSON lines |
+| 200 | stored |
 | 401 | JWT missing, expired, unsigned, or signed by the wrong key |
+| 403 | the token may not write, or names no `resource_id` |
+| 422 | a name or value datum will not store |
+| 413 | more than 10 000 samples reached datum |
+| 503 | datum is up, its store is not |
 | 0 | never got there |
 
 The bad case is silence. An expired token gives 401, metrics stop, and the
@@ -246,29 +258,32 @@ quiet.
 
 ## The token decides who you are
 
-Your JWT carries a `vm_access` claim holding one label: `resource_id`, the
-machine the metrics came from. vmauth passes it to the store, which applies it
-**over** whatever you sent. Sending your own `resource_id` will not get you an
-error — it is simply replaced, which is what stops one host reporting as
-another.
+Your JWT carries `resource_id`, the machine the metrics came from, and
+`access`, which must include `write`. Datum stamps every row with that id. You
+cannot send your own: there is no field for it, and one hidden in your labels is
+dropped. That is what stops one host reporting as another.
 
 ```python
 batch.gauge("cpu", 1.2, "percent", service="web")
 # stored as:
-# pilot_process_cpu_percent{service="web",region="ap_south_1",
-#                           resource_id="vm-abc123"} 1.2
+# metric=pilot_process_cpu_percent  resource_id=vm-abc123
+# labels={"service": "web"}         value=1.2
 ```
 
 ## Limits
 
-| Limit | Value |
-|---|---|
-| samples per request | 10 000 |
-| labels per sample | 30 |
-| label value length | 256 |
-| metric name length | 200 |
+| Limit | Value | Enforced by |
+|---|---|---|
+| samples per request | 10 000 | the client, before sending, and datum on both write paths |
+| metric name length | 200 | datum |
+| labels per sample | none yet | — |
+| label value length | none yet | — |
+| request size | none yet | — |
 
-Values must be real numbers. `NaN` and `Inf` are rejected.
+Two gaps worth knowing about. **`NaN` and `Inf` are not rejected**, so a divide
+by zero in a producer lands in the store as a number nobody can chart. Check
+your own arithmetic. And the sample cap is checked after the whole body is
+read, so it bounds what is stored, not what is received.
 
-There is **no limit on request size** yet. The 10 000 sample cap is all there
-is, and it is checked after the whole body is read.
+Metric and label names must match `^[a-z_][a-z0-9_]*$` here, which is stricter
+than what datum accepts. The client refuses them before they are sent.

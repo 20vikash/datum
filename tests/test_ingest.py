@@ -38,15 +38,34 @@ def test_a_claimed_resource_id_in_the_body_is_dropped(client, provider):
     assert "resource_id" not in written["labels"]
 
 
-def test_a_token_without_a_resource_id_cannot_write(tokens):
-    token = mint({"vm_access": {"metrics_extra_labels": ["source_id=pilot_1"]}})
+def as_client(tokens, claims):
+    """A client carrying one specific set of claims."""
     app = create_app(SETTINGS, tokens=tokens, provider=FakeProvider())
+    headers = {"Authorization": f"Bearer {mint(claims)}"}
+    return TestClient(app, headers=headers)
 
-    with TestClient(app, headers={"Authorization": f"Bearer {token}"}) as client:
+
+def test_a_reader_cannot_write(tokens):
+    with as_client(tokens, {"resource_id": "acme", "access": ["read"]}) as client:
         response = post(client, SAMPLE)
 
     assert response.status_code == 403
-    assert "resource_id" in response.json()["detail"]
+    assert "write" in response.json()["detail"]
+
+
+def test_a_token_without_a_resource_id_cannot_write(tokens):
+    with as_client(tokens, {"access": ["read", "write"]}) as client:
+        response = post(client, SAMPLE)
+
+    assert response.status_code == 403
+
+
+def test_a_writer_cannot_read(tokens):
+    with as_client(tokens, {"resource_id": "acme", "access": ["write"]}) as client:
+        response = client.post("/v1/query", json={"sql": "SELECT 1"})
+
+    assert response.status_code == 403
+    assert "read" in response.json()["detail"]
 
 
 def test_ingest_is_behind_the_same_gate(anonymous):

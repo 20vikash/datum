@@ -3,6 +3,8 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
+from datum.config.clickhouse import RESOURCE_LABEL
+
 
 class ProviderError(RuntimeError):
     """The store could not be reached. Never swallowed into empty rows."""
@@ -50,3 +52,7 @@ class MetricProvider(ABC):
     @abstractmethod
     def get_label_values(self, metric: str, label: str) -> list[str]:
         """Distinct values of one label on one metric."""
+
+    def get_columns(self, metric: str) -> list[str]:
+        """The table as a caller sees it, with the label map flattened out."""
+        return ["ts", "metric", RESOURCE_LABEL, *self.get_labels(metric), "value"]
