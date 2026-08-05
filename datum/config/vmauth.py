@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from string import Template
+
+import yaml
 
 # Query paths are absent on purpose: a token that can write must not be able to
 # read every tenant's series.
@@ -17,24 +18,11 @@ PUBLIC_KEY_PATH_VARIABLE = "DATUM_JWT_PUBLIC_KEY_FILE"
 OIDC_ISSUER_VARIABLE = "DATUM_OIDC_ISSUER"
 
 
-# `$` substitution, not str.format: `{{.MetricsExtraLabels}}` is vmauth's own
-# placeholder and braces would need doubling to survive.
-CONFIG = Template("""# Written by bootstrap.py. Re-run it to change this; edits here are lost.
-users:
-- jwt:
-$verification$match_claims  url_map:
-  - src_paths:
-$write_paths    url_prefix: "$upstream/?extra_label={{.MetricsExtraLabels}}"
-""")
+HEADER = "# Written by bootstrap.py. Re-run it to change this; edits here are lost.\n"
 
-OIDC_KEYS = Template('    oidc:\n      issuer: "$issuer"\n')
-KEY_FILE = Template('    public_key_files:\n    - "$path"\n')
-NO_VERIFICATION = "    skip_verify: true\n"
-MATCH_CLAIMS = Template('    match_claims:\n      scope: "$scope"\n')
-
-# Central signs bench and enrolment tokens with this same key, so without a scope
-# any of them could write. Sibling of the key block: vmauth has no match_claims
-# inside `oidc`.
+# vmauth's own placeholder. It reads this literally and substitutes the token's
+# labels, which VictoriaMetrics then applies over whatever the producer sent.
+EXTRA_LABELS = "{{.MetricsExtraLabels}}"
 
 
 @dataclass(frozen=True)
@@ -84,22 +72,35 @@ class VmauthSettings:
 
     @property
     def config(self) -> str:
-        """The whole `-auth.config`, from one set of settings."""
-        return CONFIG.substitute(
-            verification=self._verification,
-            match_claims=MATCH_CLAIMS.substitute(scope=self.scope) if self.scope else "",
-            write_paths="".join(f'    - "{path}"\n' for path in self.write_paths),
-            upstream=self.victoria_url.rstrip("/"),
-        )
+        """The whole `-auth.config`. Serialised rather than templated, so the
+        nesting cannot be got wrong by hand."""
+        user = {"jwt": self._jwt, "url_map": [self._url_map]}
+        return HEADER + yaml.safe_dump({"users": [user]}, sort_keys=False)
 
     @property
-    def _verification(self) -> str:
-        """The one block that decides whether a signature is checked."""
+    def _jwt(self) -> dict:
+        """How a token is checked: its signature, then its claims."""
+        # Central signs bench and enrolment tokens with the same key, so without
+        # a scope any of them could write.
+        claims = {"match_claims": {"scope": self.scope}} if self.scope else {}
+        return self._verification | claims
+
+    @property
+    def _verification(self) -> dict:
+        """The one key that decides whether a signature is checked."""
         if self.mode == OIDC:
-            return OIDC_KEYS.substitute(issuer=self.oidc_issuer)
+            return {"oidc": {"issuer": self.oidc_issuer}}
         if self.mode == PUBLIC_KEY:
-            return KEY_FILE.substitute(path=self.public_key_path)
-        return NO_VERIFICATION
+            return {"public_key_files": [str(self.public_key_path)]}
+        return {"skip_verify": True}
+
+    @property
+    def _url_map(self) -> dict:
+        upstream = self.victoria_url.rstrip("/")
+        return {
+            "src_paths": list(self.write_paths),
+            "url_prefix": f"{upstream}/?extra_label={EXTRA_LABELS}",
+        }
 
     @property
     def api_environment(self) -> str:

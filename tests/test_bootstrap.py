@@ -124,11 +124,11 @@ def test_rewriting_identical_config_reports_no_change(key, tmp_path):
 def test_the_scope_flag_reaches_the_vmauth_config(key):
     built = installer("--public-key", str(key), "--scope", "metrics")
 
-    assert '      scope: "metrics"\n' in built.vmauth.config
+    assert "      scope: metrics\n" in built.vmauth.config
 
 
 def test_the_scope_defaults_to_datum(key):
-    assert '      scope: "datum"\n' in installer("--public-key", str(key)).vmauth.config
+    assert "      scope: datum\n" in installer("--public-key", str(key)).vmauth.config
 
 
 def test_an_empty_scope_drops_the_match(key):

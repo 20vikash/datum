@@ -28,14 +28,14 @@ def test_public_key_config_is_exact():
         "users:\n"
         "- jwt:\n"
         "    public_key_files:\n"
-        '    - "/home/frappe/services/central.pub"\n'
+        "    - /home/frappe/services/central.pub\n"
         "    match_claims:\n"
-        '      scope: "datum"\n'
+        "      scope: datum\n"
         "  url_map:\n"
         "  - src_paths:\n"
-        '    - "/api/v1/write"\n'
-        '    - "/api/v1/import"\n'
-        '    url_prefix: "http://127.0.0.1:8428/?extra_label={{.MetricsExtraLabels}}"\n'
+        "    - /api/v1/write\n"
+        "    - /api/v1/import\n"
+        "    url_prefix: http://127.0.0.1:8428/?extra_label={{.MetricsExtraLabels}}\n"
     )
 
 
@@ -43,7 +43,7 @@ def test_migrating_to_oidc_changes_only_the_verification_block():
     with_key = config(settings(public_key_path=KEY_PATH))
     with_oidc = config(settings(oidc_issuer="https://central.example.com"))
 
-    assert '    oidc:\n      issuer: "https://central.example.com"\n' in with_oidc
+    assert "    oidc:\n      issuer: https://central.example.com\n" in with_oidc
     assert "public_keys" not in with_oidc
     # everything after the verification block is identical
     assert with_key.split("  url_map:\n")[1] == with_oidc.split("  url_map:\n")[1]
@@ -74,7 +74,7 @@ def test_no_verification_configured_is_a_startup_failure():
 def test_a_trailing_slash_on_the_store_does_not_double_up():
     written = config(VmauthSettings(victoria_url=URL + "/", public_key_path=KEY_PATH))
 
-    assert f'url_prefix: "{URL}/?extra_label=' in written
+    assert f"url_prefix: {URL}/?extra_label=" in written
 
 
 def test_skip_verify_reports_that_it_is_not_verifying():
@@ -86,14 +86,14 @@ def test_the_scope_gates_which_tokens_may_write():
     """Central signs bench and enrolment tokens with the same key as datum's."""
     written = config(settings(public_key_path=KEY_PATH))
 
-    assert '    match_claims:\n      scope: "datum"\n' in written
+    assert "    match_claims:\n      scope: datum\n" in written
 
 
 def test_match_claims_is_a_sibling_of_the_key_block_not_a_child():
     """vmauth has no match_claims inside `oidc`; nesting it is a startup failure."""
     written = config(settings(oidc_issuer="https://central.example.com"))
 
-    assert '      issuer: "https://central.example.com"\n    match_claims:\n' in written
+    assert "      issuer: https://central.example.com\n    match_claims:\n" in written
 
 
 def test_an_empty_scope_accepts_anything_the_key_signed():

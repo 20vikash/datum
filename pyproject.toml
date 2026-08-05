@@ -16,6 +16,7 @@ api = [
     # [crypto] pulls cryptography, which PyJWT needs for the RSA and ECDSA
     # algorithms. vmauth verifies with those only, so HMAC is never accepted.
     "pyjwt[crypto]>=2.9",
+    "pyyaml>=6",
     "uvicorn>=0.30",
 ]
 dev = [
