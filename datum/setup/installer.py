@@ -137,27 +137,6 @@ class Installer:
         if not vmauth.api_environment:
             print("\nReads stay closed: datum-api has no key, so every read is a 401.")
 
-    def local_commands(self) -> None:
-        """Everything needed to run the three processes by hand, in order."""
-        options, store = self.options, self.options.store
-        environment = self.vmauth.api_environment.replace("Environment=", "").strip()
-
-        print("\nRun these in three terminals:\n")
-        print(f"  {self.find_binary('victoria-metrics', required=False)} \\")
-        print(f"    -httpListenAddr={store.listen} \\")
-        print(f"    -storageDataPath={options.data_dir} -retentionPeriod={store.retention}\n")
-        print(f"  {self.find_binary('vmauth', required=False)} \\")
-        print(f"    -auth.config={options.vmauth_config} \\")
-        print(f"    -httpListenAddr={self.vmauth.listen}\n")
-        print(f"  DATUM_URL={store.url} \\")
-        if environment:
-            print(f"  {environment} \\")
-        print(
-            f"    uv run uvicorn datum:create_app --factory "
-            f"--host {options.datum_host} --port {options.datum_port}"
-        )
-        print(f"\nWrites go to {self.vmauth.listen}, reads to {options.datum_host}:{options.datum_port}.")
-
     def run(self) -> None:
         """What the command line asked for."""
         if self.options.dry_run:
@@ -166,7 +145,6 @@ class Installer:
         if self.options.config_only:
             self.write_config()
             print(f"Wrote {self.options.vmauth_config} ({self.vmauth.mode})")
-            self.local_commands()
             return
         self.install()
         self.report()
