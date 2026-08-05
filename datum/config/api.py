@@ -3,32 +3,41 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+from datum.config.clickhouse import DATABASE, TABLE, get_schema
+
+MAX_ROWS = 100_000
+TIMEOUT = 30.0
+
 
 @dataclass(frozen=True)
 class Settings:
-    """How the API talks to the metrics store.
+    """How the API reaches ClickHouse. The user needs SELECT and INSERT, nothing more."""
 
-    No credential: the store listens on loopback, reads come through this
-    service and writes come through vmauth. The key callers are verified with is
-    a different thing and lives in `DATUM_JWT_PUBLIC_KEY_FILE`, read by
-    `TokenVerifier.from_env`. `bootstrap.py` sets both on the unit.
-    """
-
-    url: str
-    dialect: str = "mysql"
-    mode: str = "raw"
-    # BI tools paginate tables. Over a relative window that is incoherent, so the
-    # page window is dropped and the caller gets the whole window instead.
-    ignore_pagination: bool = True
+    host: str
+    port: int = 8123
+    username: str = "default"
+    password: str = ""
+    database: str = DATABASE
+    table: str = TABLE
+    max_rows: int = MAX_ROWS
+    timeout: float = TIMEOUT
 
     @classmethod
     def from_env(cls) -> Settings:
-        url = os.environ.get("DATUM_URL")
-        if not url:
-            raise RuntimeError("DATUM_URL is not set; point it at the metrics store.")
+        host = os.environ.get("DATUM_CLICKHOUSE_HOST")
+        if not host:
+            raise RuntimeError("DATUM_CLICKHOUSE_HOST is not set; point it at ClickHouse.")
         return cls(
-            url=url,
-            dialect=os.environ.get("DATUM_DIALECT", "mysql"),
-            mode=os.environ.get("DATUM_MODE", "raw"),
-            ignore_pagination=os.environ.get("DATUM_IGNORE_PAGINATION", "1") != "0",
+            host=host,
+            port=int(os.environ.get("DATUM_CLICKHOUSE_PORT", cls.port)),
+            username=os.environ.get("DATUM_CLICKHOUSE_USER", cls.username),
+            password=os.environ.get("DATUM_CLICKHOUSE_PASSWORD", cls.password),
+            database=os.environ.get("DATUM_CLICKHOUSE_DATABASE", cls.database),
+            table=os.environ.get("DATUM_CLICKHOUSE_TABLE", cls.table),
+            max_rows=int(os.environ.get("DATUM_MAX_ROWS", cls.max_rows)),
+            timeout=float(os.environ.get("DATUM_TIMEOUT", cls.timeout)),
         )
+
+    @property
+    def statements(self) -> tuple[str, ...]:
+        return get_schema(self.database, self.table)

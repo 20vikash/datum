@@ -1,4 +1,4 @@
-"""Read-side OIDC: discovery, then the key set, the same two steps vmauth takes.
+"""Read-side OIDC: discovery, then the key set.
 
 Served by a real local HTTP server rather than a mock, so the discovery and
 JWKS parsing are actually exercised.
@@ -12,8 +12,8 @@ import jwt
 import pytest
 
 from datum.api.internals import TokenVerifier
-from datum.config.vmauth import OIDC_ISSUER_VARIABLE, PUBLIC_KEY_PATH_VARIABLE
-from tests.conftest import CLAIMS, PUBLIC_KEY, mint, tamper
+from datum.api.internals.auth import OIDC_ISSUER_VARIABLE, PUBLIC_KEY_PATH_VARIABLE
+from tests.conftest import CLAIMS, IDENTITY, PUBLIC_KEY, mint, tamper
 
 KEY_ID = "central-1"
 
@@ -71,7 +71,7 @@ def test_a_token_is_verified_against_the_fetched_key_set(issuer):
     identity = verifier.resolve(signed_for(issuer))
 
     assert identity is not None
-    assert identity.labels == {"tenant_id": "acme", "source_id": "pilot_1"}
+    assert identity == IDENTITY
 
 
 def test_a_token_from_another_issuer_is_refused(issuer):

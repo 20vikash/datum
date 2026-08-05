@@ -1,26 +1,42 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-
-from datum_sql import QuerySpec
+from dataclasses import dataclass, field
 
 
 class ProviderError(RuntimeError):
-    """The store refused or could not be reached. Never swallowed into empty rows."""
+    """The store could not be reached. Never swallowed into empty rows."""
+
+
+class QueryRefused(ProviderError):
+    """The store rejected the query. The caller's fault, not the store's."""
+
+
+@dataclass
+class Rows:
+    columns: list[str]
+    rows: list[dict] = field(default_factory=list)
+    truncated: bool = False
 
 
 class MetricProvider(ABC):
     """What the service needs from a storage engine, and nothing more.
 
-    Subclass it to declare a provider, then point `app.py` at it. One that
-    forgets a method fails at construction.
-
-    Retrieval only: producers write through vmauth, straight to the store.
+    Subclass it, then point `app.py` at it. One that forgets a method fails at
+    construction.
     """
 
     @abstractmethod
-    def fetch(self, spec: QuerySpec) -> list[dict]:
-        """Rows for one translated query, before projection and ordering."""
+    def ensure_schema(self) -> None:
+        """Make the store ready to accept samples. Idempotent."""
+
+    @abstractmethod
+    def fetch(self, sql: str) -> Rows:
+        """Rows for one read, as the store answered it."""
+
+    @abstractmethod
+    def ingest(self, rows: list[dict]) -> int:
+        """Write one batch, keyed by column name. Returns rows accepted."""
 
     @property
     @abstractmethod

@@ -7,15 +7,15 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from datum.api.internals import ProviderError
-from datum_sql import UnsupportedSQL
+from datum.api.internals import ProviderError, QueryRefused
 
 UNPROCESSABLE = 422
 
 # Every failure a caller can cause, and what they are told. Anything absent is a
-# bug and becomes a 500 with a traceback, which is what we want.
+# bug and becomes a 500 with a traceback, which is what we want. QueryRefused
+# comes first: it is a ProviderError, but it is the caller's fault, not the store's.
 STATUS = {
-    UnsupportedSQL: 400,
+    QueryRefused: 400,
     NotImplementedError: 501,
     ProviderError: 503,
 }

@@ -1,7 +1,7 @@
 import time
 
 from datum.api.internals import Identity, TokenVerifier
-from tests.conftest import IDENTITY, PUBLIC_KEY, TOKEN, mint, tamper
+from tests.conftest import CLAIMS, IDENTITY, PUBLIC_KEY, TOKEN, mint, tamper
 
 
 def test_a_signed_token_resolves_to_its_identity(tokens):
@@ -26,7 +26,7 @@ def test_a_tampered_signature_is_refused(tokens):
 
 
 def test_an_expired_token_is_refused(tokens):
-    stale = mint({"exp": int(time.time()) - 60, "vm_access": {}})
+    stale = mint({"exp": int(time.time()) - 60, **CLAIMS})
 
     assert tokens.resolve(stale) is None
 
@@ -39,17 +39,28 @@ def test_without_a_key_nothing_resolves():
     assert TokenVerifier().resolve(TOKEN) is None
 
 
-def test_labels_come_from_the_access_claim():
-    identity = Identity.from_claims(
-        {"vm_access": {"metrics_extra_labels": ["tenant_id=acme", "region=blr"]}}
-    )
+def test_the_identity_is_the_resource_id_and_what_it_may_do():
+    identity = Identity.from_claims({"resource_id": "acme", "access": ["read", "write"]})
 
-    assert identity.labels == {"tenant_id": "acme", "region": "blr"}
+    assert identity.resource_id == "acme"
+    assert (identity.can_read, identity.can_write) == (True, True)
 
 
-def test_a_claim_without_labels_is_an_empty_identity():
-    assert Identity.from_claims({"vm_access": {}}).labels == {}
-    assert Identity.from_claims({}).labels == {}
+def test_access_may_be_written_as_one_string():
+    assert Identity.from_claims({"access": "read write"}).can_read is True
+
+
+def test_a_token_claiming_nothing_may_do_nothing():
+    identity = Identity.from_claims({})
+
+    assert identity == Identity()
+    assert (identity.can_read, identity.can_write) == (False, False)
+
+
+def test_read_and_write_are_separate():
+    reader = Identity.from_claims({"resource_id": "acme", "access": ["read"]})
+
+    assert (reader.can_read, reader.can_write) == (True, False)
 
 
 def test_v1_refuses_an_anonymous_caller(anonymous):
@@ -76,10 +87,11 @@ def test_auth_runs_before_validation(anonymous):
     assert response.status_code == 401
 
 
-def test_writing_is_not_served_here(client):
-    """Producers go to vmauth. Nothing in this service accepts samples."""
-    assert client.post("/v1/ingest", json={"samples": []}).status_code == 404
-    assert client.post("/v1/write", content=b"").status_code == 404
+def test_a_writer_without_a_resource_id_cannot_write():
+    """Nothing is stored that cannot be attributed to something."""
+    identity = Identity.from_claims({"access": ["read", "write"]})
+
+    assert (identity.can_read, identity.can_write) == (True, False)
 
 
 def test_the_public_key_is_what_gates_access():

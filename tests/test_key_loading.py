@@ -1,7 +1,7 @@
 import pytest
 
 from datum.api.internals import TokenVerifier
-from datum.config.vmauth import PUBLIC_KEY_PATH_VARIABLE
+from datum.api.internals.auth import PUBLIC_KEY_PATH_VARIABLE
 from tests.conftest import PUBLIC_KEY, TOKEN
 
 

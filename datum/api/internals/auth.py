@@ -4,51 +4,62 @@ import json
 import os
 import urllib.error
 import urllib.request
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 import jwt
 
-from datum.config.vmauth import OIDC_ISSUER_VARIABLE, PUBLIC_KEY_PATH_VARIABLE
+from datum.config.clickhouse import RESOURCE_LABEL
 
-ACCESS_CLAIM = "vm_access"
-LABELS_CLAIM = "metrics_extra_labels"
+ACCESS_CLAIM = "access"
+READ = "read"
+WRITE = "write"
 ALGORITHMS = ["RS256", "RS384", "RS512", "ES256", "ES384", "ES512"]
 
+PUBLIC_KEY_PATH_VARIABLE = "DATUM_JWT_PUBLIC_KEY_FILE"
+OIDC_ISSUER_VARIABLE = "DATUM_OIDC_ISSUER"
+
 DISCOVERY_PATH = "/.well-known/openid-configuration"
-# vmauth refreshes its key set every five minutes. Matching it keeps the two
-# from disagreeing about a rotated key for longer than they have to.
 KEY_LIFESPAN = 300
 DISCOVERY_TIMEOUT = 5.0
 
 
 @dataclass(frozen=True)
 class Identity:
-    """Who a token says the caller is.
+    """What a token says: who it speaks for, and whether it may read, write or both.
 
-    Read side only. Writes go to vmauth, which stamps these same labels from
-    the same claim before VictoriaMetrics sees the samples.
+    Central signs bench and site logins with the same key, so a token that
+    claims neither gets nothing here.
     """
 
-    labels: dict[str, str] = field(default_factory=dict)
+    resource_id: str = ""
+    access: frozenset[str] = frozenset()
+
+    @property
+    def can_read(self) -> bool:
+        return READ in self.access
+
+    @property
+    def can_write(self) -> bool:
+        """Nothing is written that cannot be attributed, so the id is required."""
+        return WRITE in self.access and bool(self.resource_id)
 
     @classmethod
     def from_claims(cls, claims: dict) -> Identity:
-        """`vm_access.metrics_extra_labels` is a list of `name=value` strings."""
-        labels = {}
-        for entry in claims.get(ACCESS_CLAIM, {}).get(LABELS_CLAIM, []):
-            name, _, value = str(entry).partition("=")
-            if value:
-                labels[name] = value
-        return cls(labels=labels)
+        access = claims.get(ACCESS_CLAIM) or ()
+        if isinstance(access, str):
+            access = access.split()
+        return cls(
+            resource_id=str(claims.get(RESOURCE_LABEL) or ""),
+            access=frozenset(str(entry) for entry in access),
+        )
 
 
 class TokenVerifier:
-    """Verifies the JWTs Central mints, the same way vmauth does.
+    """Verifies the JWTs Central mints.
 
-    Either a public key on disk or an OIDC issuer to fetch one from -- the two
-    modes `bootstrap.py` offers, so reads and writes are configured together.
-    HMAC is deliberately absent: vmauth verifies with RSA or ECDSA only.
+    Either a public key on disk or an OIDC issuer to fetch one from. HMAC is
+    deliberately absent: RSA and ECDSA only.
     """
 
     def __init__(self, public_key: str | None = None, oidc_issuer: str | None = None):
@@ -58,11 +69,8 @@ class TokenVerifier:
 
     @classmethod
     def from_env(cls) -> TokenVerifier:
-        """Read the key file or the issuer `bootstrap.py` put on the unit.
-
-        A key path that is set but unreadable is a startup failure, never a
-        service that silently answers 401 to everyone.
-        """
+        """A key path that is set but unreadable is a startup failure, never a
+        service that silently answers 401 to everyone."""
         location = os.environ.get(PUBLIC_KEY_PATH_VARIABLE)
         issuer = os.environ.get(OIDC_ISSUER_VARIABLE)
         if not location:
@@ -100,7 +108,7 @@ class TokenVerifier:
         return self._keys.get_signing_key_from_jwt(token).key
 
     def _jwks_uri(self) -> str:
-        """Discovery, the same two steps vmauth takes.
+        """Discovery, then the key set.
 
         Failure raises `PyJWKClientError`, so `resolve` answers 401 while the
         provider is down rather than serving reads with no key at all.

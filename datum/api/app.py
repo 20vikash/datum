@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from datum.api import errors
-from datum.api.internals import MetricStore, TokenVerifier, VictoriaMetricsProvider
+from datum.api.internals import ClickHouseProvider, MetricProvider, MetricStore, TokenVerifier
 from datum.api.routes import router
 from datum.config import Settings
 
@@ -13,25 +13,39 @@ TITLE = "datum"
 VERSION = "0.1.0"
 
 TAGS = [
-    {"name": "query", "description": "Read numbers back with SQL. One SELECT, one PromQL query."},
+    {"name": "query", "description": "Read numbers back with SQL, straight through to ClickHouse."},
+    {"name": "ingest", "description": "Write samples. The token decides who they belong to."},
 ]
+
+
+def get_provider(settings: Settings) -> MetricProvider:
+    return ClickHouseProvider(
+        host=settings.host,
+        port=settings.port,
+        username=settings.username,
+        password=settings.password,
+        database=settings.database,
+        table=settings.table,
+        statements=settings.statements,
+        max_rows=settings.max_rows,
+        timeout=settings.timeout,
+    )
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    settings: Settings = app.state.settings
-    provider = VictoriaMetricsProvider(url=settings.url)
-    app.state.store = MetricStore(
-        provider,
-        dialect=settings.dialect,
-        mode=settings.mode,
-        ignore_pagination=settings.ignore_pagination,
-    )
+    store = MetricStore(app.state.provider or get_provider(app.state.settings))
+    store.ensure_schema()
+    app.state.store = store
     yield
     app.state.store = None
 
 
-def create_app(settings: Settings | None = None, tokens: TokenVerifier | None = None) -> FastAPI:
+def create_app(
+    settings: Settings | None = None,
+    tokens: TokenVerifier | None = None,
+    provider: MetricProvider | None = None,
+) -> FastAPI:
     """Build the `datum-api` application.
 
     `tokens` defaults to the public key in `DATUM_JWT_PUBLIC_KEY`. With none
@@ -48,6 +62,7 @@ def create_app(settings: Settings | None = None, tokens: TokenVerifier | None = 
     )
     app.state.settings = settings or Settings.from_env()
     app.state.tokens = tokens or TokenVerifier.from_env()
+    app.state.provider = provider
     app.state.store = None
     errors.install(app)
     app.include_router(router)

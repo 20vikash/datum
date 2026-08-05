@@ -4,9 +4,9 @@ from fastapi.testclient import TestClient
 
 from datum import Settings, create_app
 from datum.api.internals import Identity, TokenVerifier
-from datum.api.internals.providers import MetricProvider
+from datum.api.internals.providers import MetricProvider, Rows
 
-SETTINGS = Settings(url="http://localhost:8428")
+SETTINGS = Settings(host="localhost")
 
 # A fixed throwaway keypair, so tests never generate one and both copies of this
 # module agree on it. Never used anywhere but here.
@@ -54,8 +54,8 @@ awIDAQAB
 """
 
 
-CLAIMS = {"vm_access": {"metrics_extra_labels": ["tenant_id=acme", "source_id=pilot_1"]}}
-IDENTITY = Identity(labels={"tenant_id": "acme", "source_id": "pilot_1"})
+CLAIMS = {"resource_id": "acme", "access": ["read", "write"]}
+IDENTITY = Identity(resource_id="acme", access=frozenset({"read", "write"}))
 
 
 def mint(claims: dict | None = None, key: str | None = None, headers: dict | None = None) -> str:
@@ -80,16 +80,24 @@ def tamper(token: str) -> str:
 
 
 class FakeProvider(MetricProvider):
-    """Stands in for a real store, so route tests do not depend on how far
-    `VictoriaMetricsProvider` has been written."""
+    """Stands in for ClickHouse, so route tests open no socket."""
 
     def __init__(self, **options):
         self.options = options
-        self.fetched: list = []
+        self.fetched: list[str] = []
+        self.written: list[dict] = []
+        self.prepared = False
 
-    def fetch(self, spec):
-        self.fetched.append(spec)
-        return []
+    def ensure_schema(self):
+        self.prepared = True
+
+    def fetch(self, sql):
+        self.fetched.append(sql)
+        return Rows(columns=["ts", "value"])
+
+    def ingest(self, rows):
+        self.written.extend(rows)
+        return len(rows)
 
     @property
     def metrics(self):
@@ -108,16 +116,20 @@ def tokens():
 
 
 @pytest.fixture
-def client(tokens):
-    """Authenticated, the way a reader talks to the service."""
-    app = create_app(SETTINGS, tokens=tokens)
+def provider():
+    return FakeProvider()
+
+
+@pytest.fixture
+def client(tokens, provider):
+    """Authenticated, the way a caller talks to the service."""
+    app = create_app(SETTINGS, tokens=tokens, provider=provider)
     with TestClient(app, headers={"Authorization": f"Bearer {TOKEN}"}) as test_client:
-        app.state.store.provider = FakeProvider()
         yield test_client
 
 
 @pytest.fixture
 def anonymous():
-    app = create_app(SETTINGS, tokens=TokenVerifier())
+    app = create_app(SETTINGS, tokens=TokenVerifier(), provider=FakeProvider())
     with TestClient(app) as test_client:
         yield test_client
