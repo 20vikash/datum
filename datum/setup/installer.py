@@ -137,9 +137,6 @@ class Installer:
         if self.options.dry_run:
             self.preview()
             return
-        if self.options.config_only:
-            self.write_vmauth_config()
-            print(f"Wrote {self.options.vmauth_config} ({self.vmauth.mode})")
-            return
+
         self.install()
         self.report()
