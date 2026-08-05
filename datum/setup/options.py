@@ -41,7 +41,6 @@ class Options:
     config_dir: Path = SERVICES
     data_dir: Path = DATA
     dry_run: bool = False
-    config_only: bool = False
 
     @classmethod
     def from_argv(cls, argv: list[str] | None = None) -> Options:
@@ -132,11 +131,5 @@ def _parser() -> argparse.ArgumentParser:
         "--dry-run",
         action="store_true",
         help="Print what would be written, touch nothing, start nothing.",
-    )
-    parser.add_argument(
-        "--config-only",
-        action="store_true",
-        help="Write the vmauth config and print how to run the three processes. "
-        "No units, no systemd, so it works anywhere.",
     )
     return parser
