@@ -31,6 +31,7 @@ class Options:
     oidc_issuer: str = ""
     skip_verify: bool = False
     scope: str = VmauthSettings.scope
+    direct_reads: bool = VmauthSettings.direct_reads
     victoria_listen: str = VictoriaSettings.listen
     vmauth_listen: str = VmauthSettings.listen
     datum_host: str = ApiSettings.host
@@ -72,6 +73,7 @@ class Options:
             oidc_issuer=self.oidc_issuer,
             skip_verify=self.skip_verify,
             scope=self.scope,
+            direct_reads=self.direct_reads,
         )
         settings.mode  # noqa: B018 -- raises on a missing or ambiguous choice
         return settings
@@ -111,6 +113,14 @@ def _parser() -> argparse.ArgumentParser:
         help="Which tokens may write, matched on the JWT's `scope` claim. Central signs "
         "bench and enrolment tokens with the same key, so without this any of them "
         "could push metrics. Empty accepts anything that key signed.",
+    )
+
+    parser.add_argument(
+        "--direct-reads",
+        action="store_true",
+        help="Also proxy PromQL query paths, for callers that speak PromQL rather than "
+        "SQL. Each read is narrowed to the token's `metrics_extra_filters`, and a token "
+        "without that claim is refused, so this grants no wider read than the caller owns.",
     )
 
     parser.add_argument("--victoria-listen", default=default.victoria_listen)
