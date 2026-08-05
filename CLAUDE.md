@@ -48,10 +48,14 @@ VictoriaMetrics stores them, and consumers read them back over SQL.
   - `api/internals/auth.py` — `Identity`, `TokenVerifier`; JWT signature checking
   - `api/internals/store.py` — `MetricStore`, the facade routes call
   - `api/internals/providers/` — `MetricProvider` and `VictoriaMetricsProvider`. Reads only
-- `bootstrap.py` — orchestration only: parse flags, render what `config/` describes, install,
-  start. No defaults and no templates of its own. There is no env file: units carry what they
-  need and the public key stays a file both vmauth and datum-api read, so the two cannot verify
-  against different keys. `--config-only` skips systemd, which is how the stack runs on a Mac.
+  - `setup/` — putting the above on a host. `bootstrap.py` at the root is nineteen lines that
+    call into it.
+    - `options.py` — `Options`, the parsed command line, already resolved and checked
+    - `installer.py` — `Installer`; renders, writes, and hands the changed set to systemd
+    - `systemd.py` — `Systemd`, the only part that needs Linux
+- There is no env file: units carry what they need and the public key stays a file both vmauth
+  and datum-api read, so the two cannot verify against different keys. `--config-only` skips
+  systemd entirely, which is how the stack runs on a Mac.
 - `tests/conftest.py` — a fixed test keypair, and authenticated and anonymous clients
 - `tests/test_planner.py`, `test_rows.py` — translation and row shaping
 - `tests/test_api.py`, `test_auth.py`, `test_key_loading.py`, `test_oidc.py`, `test_providers.py`
