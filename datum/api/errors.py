@@ -11,6 +11,7 @@ from datum.api.internals import ProviderError, QueryRefused
 from datum.api.internals.remote import (
     BodyTooLarge,
     RemoteWriteError,
+    TooManyLabels,
     TooManySamples,
     TooManySeries,
 )
@@ -25,6 +26,7 @@ STATUS = {
     TooManySamples: 413,
     BodyTooLarge: 413,
     TooManySeries: 413,
+    TooManyLabels: 413,
     RemoteWriteError: 400,
     NotImplementedError: 501,
     ProviderError: 503,

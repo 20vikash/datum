@@ -7,9 +7,8 @@ import re
 TABLE = "samples"
 DATABASE = "datum"
 
-# Database and table names are interpolated into SQL, and `qualified` is the key
-# the tenant filter is attached under. A name needing quotes would not match the
-# table ClickHouse resolves, and reads would go unscoped without erroring.
+# Interpolated into SQL, and the key the tenant filter attaches under. A name
+# needing quotes would not match, and reads would go unscoped without erroring.
 IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
 
@@ -48,8 +47,7 @@ RESOURCE_SETTING = "SQL_datum_resource_id"
 
 
 def get_schema(database: str = DATABASE, table: str = TABLE, username: str = "default"):
-    """The table and the policy that scopes it, created together: a deployment
-    with the table but not the policy reads across tenants through `merge()`."""
+    """Table and policy together: one without the other leaks through `merge()`."""
     return (
         f"CREATE DATABASE IF NOT EXISTS {database}",
         SCHEMA.format(database=database, table=table),

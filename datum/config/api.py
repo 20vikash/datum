@@ -21,8 +21,7 @@ class Settings:
     timeout: float = TIMEOUT
 
     def __post_init__(self):
-        """Checked here rather than in `from_env`, so no construction path can
-        put an unquotable name into the SQL the provider builds."""
+        """Checked here, so no construction path puts an unquotable name into SQL."""
         check_identifier(self.database, "DATUM_CLICKHOUSE_DATABASE")
         check_identifier(self.table, "DATUM_CLICKHOUSE_TABLE")
         check_identifier(self.username, "DATUM_CLICKHOUSE_USER")

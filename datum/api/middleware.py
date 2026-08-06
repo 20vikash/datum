@@ -15,10 +15,8 @@ TOO_LARGE = 413
 class BodyLimit:
     """Refuse an oversized body before anything reads it.
 
-    ASGI rather than a dependency: FastAPI reads the whole body before it solves
-    dependencies, so by the time a route could object the allocation has already
-    happened. A request that declares no length is refused outright, because a
-    limit that can be skipped by omitting a header is not a limit.
+    ASGI rather than a dependency: FastAPI reads the body before solving
+    dependencies. No declared length is refused, or the limit is optional.
     """
 
     def __init__(self, app: ASGIApp, max_bytes: int = MAX_BODY):

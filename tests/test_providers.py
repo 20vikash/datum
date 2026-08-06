@@ -176,8 +176,7 @@ def test_the_schema_is_created_where_it_is_configured():
 
 
 def test_the_policy_is_created_with_the_table_not_after_it():
-    """A deployment with the table but no policy reads across tenants through
-    `merge()`, so the two are not separable."""
+    """Table without policy leaks through `merge()`, so they are not separable."""
     client = FakeClient()
 
     build(client).ensure_schema()
@@ -189,8 +188,7 @@ def test_the_policy_is_created_with_the_table_not_after_it():
 
 
 def test_a_read_carries_both_filters():
-    """The policy binds to the table and holds however the rows are reached; the
-    table filter covers the direct read if a server's policy is missing."""
+    """Policy binds to the table; the filter covers a missing policy."""
     client = FakeClient()
 
     build(client).fetch("SELECT 1", RESOURCE)
@@ -200,7 +198,7 @@ def test_a_read_carries_both_filters():
     assert settings["additional_table_filters"] == {"datum.samples": "resource_id = 'acme'"}
 
 
-# What ClickHouse 26.8 actually prints for SHOW GRANTS, not a paraphrase of it.
+# What ClickHouse 26.8 prints, not a paraphrase.
 SCOPED_GRANTS = [
     "GRANT CREATE DATABASE, CREATE TABLE, CREATE ROW POLICY ON datum.* TO datum",
     "GRANT SELECT, INSERT ON datum.samples TO datum",
@@ -222,8 +220,7 @@ def test_the_documented_grants_are_enough_to_start():
     ],
 )
 def test_a_credential_that_reaches_past_its_table_stops_startup(grant):
-    """The row policy covers one table. A grant past it is a read that leaves
-    its resource_id through a table no policy sees."""
+    """The policy covers one table; a grant past it is a way around it."""
     rows = [[line] for line in (*SCOPED_GRANTS, grant)]
     client = FakeClient(columns=["grant"], rows=rows)
 
@@ -232,8 +229,7 @@ def test_a_credential_that_reaches_past_its_table_stops_startup(grant):
 
 
 def test_the_driver_is_told_about_the_custom_setting(monkeypatch):
-    """It is absent from system.settings, so an untaught driver drops it and
-    every read fails closed."""
+    """Absent from system.settings, so an untaught driver drops it."""
     client = FakeClient()
     monkeypatch.setattr(clickhouse_connect, "get_client", lambda **_: client)
 

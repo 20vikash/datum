@@ -150,10 +150,13 @@ datum-beacon ───────────┘ evaluates rules
   `MAX_DECOMPRESSED` bounds what snappy expands to, which the body cap cannot see;
   `MAX_BATCH` bounds what ClickHouse is asked to swallow, and is reached only after a parse.
   Adding a cap means adding it there and saying which of those three it is.
-- **Remote write counts series before it parses.** `MAX_BATCH` counts readings, so a body of
-  series carrying none passes it: 987k empty series cost 0.8 MB on the wire and measured
-  191 MB parsed. `_count_series` walks the top-level protobuf tags, allocates nothing and
-  stops early. A series always holds at least one reading, so `MAX_BATCH` bounds series too.
+- **Remote write counts what a body holds before protobuf builds it.** The objects are the
+  cost, not the bytes: a series is ~193 bytes parsed against 17 sent, so 987k empty series
+  cost 0.8 MB on the wire and measured 191 MB parsed, while passing a readings cap that
+  counted zero. `_scan` walks the tags for series, readings and labels, allocates nothing and
+  stops at the first breach. A series always holds at least one reading, so `MAX_BATCH` bounds
+  series too; labels have no natural bound and get `MAX_LABELS`. A new cap on anything the
+  wire format does not bound belongs in that scan, not after the parse.
 - Construction must open no sockets. The provider connects on first use, so tests and startup
   do not depend on ClickHouse being up.
 - Routes are `def`, not `async def`. Every store call blocks, so it belongs in the threadpool
