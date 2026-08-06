@@ -65,8 +65,9 @@ class ClickHouseProvider(MetricProvider):
         for statement in self.statements:
             self._run(self.client.command, statement)
 
-    def fetch(self, sql: str) -> Rows:
-        result = self._read(sql)
+    def fetch(self, sql: str, resource_id: str | None = None) -> Rows:
+        # Force a resource_id filter so that only the token owner's rows can be read incase a read token is leaked?
+        result = self._read(sql, parameters={"resource_id": resource_id} if resource_id else None)
         columns = list(result.column_names)
         rows = [dict(zip(columns, row)) for row in result.result_rows]
         return Rows(columns=columns, rows=rows, truncated=len(rows) >= self.max_rows)

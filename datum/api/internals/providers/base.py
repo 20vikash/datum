@@ -33,8 +33,8 @@ class MetricProvider(ABC):
         """Make the store ready to accept samples. Idempotent."""
 
     @abstractmethod
-    def fetch(self, sql: str) -> Rows:
-        """Rows for one read, as the store answered it."""
+    def fetch(self, sql: str, resource_id: str | None = None) -> Rows:
+        """Rows for one read, as the store answered it. Additional filtering by resource_id is optional, but secure."""
 
     @abstractmethod
     def ingest(self, rows: list[dict]) -> int:

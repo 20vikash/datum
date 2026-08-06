@@ -9,9 +9,9 @@ router = APIRouter(tags=["query"])
 
 
 @router.post("/query")
-def query(body: QueryRequest, provider: Provider, _: Reader) -> QueryResponse:
+def query(body: QueryRequest, provider: Provider, reader: Reader) -> QueryResponse:
     """Run one read against ClickHouse and hand back what it answered."""
-    result = provider.fetch(body.sql)
+    result = provider.fetch(body.sql, resource_id=reader.resource_id)
     return QueryResponse(columns=result.columns, rows=result.rows, truncated=result.truncated)
 
 
