@@ -3,10 +3,8 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-from datum.config.clickhouse import DATABASE, TABLE
-
-MAX_ROWS = 100_000
-TIMEOUT = 30.0
+from datum.config.clickhouse import DATABASE, TABLE, check_identifier
+from datum.config.limits import MAX_ROWS, TIMEOUT
 
 
 @dataclass(frozen=True)
@@ -21,6 +19,12 @@ class Settings:
     table: str = TABLE
     max_rows: int = MAX_ROWS
     timeout: float = TIMEOUT
+
+    def __post_init__(self):
+        """Checked here rather than in `from_env`, so no construction path can
+        put an unquotable name into the SQL the provider builds."""
+        check_identifier(self.database, "DATUM_CLICKHOUSE_DATABASE")
+        check_identifier(self.table, "DATUM_CLICKHOUSE_TABLE")
 
     @classmethod
     def from_env(cls) -> Settings:

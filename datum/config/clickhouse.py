@@ -2,8 +2,22 @@
 
 from __future__ import annotations
 
+import re
+
 TABLE = "samples"
 DATABASE = "datum"
+
+# Database and table names are interpolated into SQL, and `qualified` is the key
+# the tenant filter is attached under. A name needing quotes would not match the
+# table ClickHouse resolves, and reads would go unscoped without erroring.
+IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+
+
+def check_identifier(name: str, what: str) -> str:
+    if not IDENTIFIER.match(name):
+        raise ValueError(f"{what} must match {IDENTIFIER.pattern}, not {name!r}")
+    return name
+
 
 RESOURCE_LABEL = "resource_id"
 COLUMNS = ("ts", "metric", RESOURCE_LABEL, "labels", "value")

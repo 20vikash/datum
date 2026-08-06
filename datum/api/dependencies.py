@@ -29,6 +29,7 @@ def get_identity(
         )
     return identity
 
+
 Caller = Annotated[Identity, Depends(get_identity)]
 
 

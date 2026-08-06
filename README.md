@@ -170,7 +170,8 @@ Signatures must be RSA or ECDSA. HMAC is never accepted.
 | 400 | ClickHouse refused the query, or the remote write body was unreadable |
 | 401 | JWT missing, unsigned, expired, signed by the wrong key, or naming no `resource_id` |
 | 403 | the token may not do that: no `read`, or no `write` |
-| 413 | more than 10,000 samples in one remote write request |
+| 411 | no `Content-Length`, so the body cap could not be applied |
+| 413 | body over 8 MB, decompressing past 16 MB, or more than 10,000 samples |
 | 415 | remote write v2, which is not read here |
 | 422 | the request body broke the schema |
 | 503 | datum is up, ClickHouse is not |

@@ -38,10 +38,12 @@ ClickHouse stores them, and consumers read them back with SQL.
 
 - `datum/` — the service.
   - `config/` — every default lives here, nothing hardcoded elsewhere
-    - `api.py` — `Settings.from_env()`; how to reach ClickHouse, and the read caps
+    - `api.py` — `Settings.from_env()`; how to reach ClickHouse, and identifier checking
     - `clickhouse.py` — the one table's DDL, its column order, and `resource_id`'s name
+    - `limits.py` — every cap on one request, in the order a request meets them
   - `api/app.py` — `create_app(settings, tokens, provider)`; builds the provider once, at
     startup, and creates the schema if it is missing
+  - `api/middleware.py` — `BodyLimit`; the only cap that runs before an allocation
   - `api/dependencies.py` — `Provider`, `Caller`, `Reader`, `Writer`; the gates on `/v1`
   - `api/errors.py` — every failure a caller can cause, mapped to its status
   - `api/routes/v1/` — `query.py` and `ingest.py`, mounted in `v1/__init__.py`
@@ -136,8 +138,11 @@ datum-beacon ───────────┘ evaluates rules
 - The environment is managed by `uv`. Use `uv run`, `uv add`, `uv sync`.
 - Run `uv run pytest` and `uv run ruff check .` after changes.
 - A schema change needs a matching change in `COLUMNS`, and a test asserting the insert order.
-- Both write paths cap a batch at `MAX_BATCH`. Remote write counts from the protobuf before
-  building anything, so an oversized request costs the parse and answers 413.
+- Every cap lives in `config/limits.py`, and they are a ladder, not alternatives. `MAX_BODY` is
+  the only one that runs before an allocation, so it is what makes the rest affordable;
+  `MAX_DECOMPRESSED` bounds what snappy expands to, which the body cap cannot see;
+  `MAX_BATCH` bounds what ClickHouse is asked to swallow, and is reached only after a parse.
+  Adding a cap means adding it there and saying which of those three it is.
 - Construction must open no sockets. The provider connects on first use, so tests and startup
   do not depend on ClickHouse being up.
 - Routes are `def`, not `async def`. Every store call blocks, so it belongs in the threadpool

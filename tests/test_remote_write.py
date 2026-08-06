@@ -5,7 +5,7 @@ import pytest
 
 from datum.api.internals.remote import RemoteWriteError, TooManySamples, decode
 from datum.api.internals.remote.remote_write_pb2 import WriteRequest
-from datum.api.internals.schemas import MAX_BATCH
+from datum.config import MAX_BATCH
 
 PATH = "/v1/ingest/remote"
 V2 = "application/x-protobuf;proto=io.prometheus.write.v2.Request"
@@ -103,7 +103,9 @@ def test_the_route_stores_what_it_decoded(client, provider):
 
 def test_the_token_still_owns_the_resource_id(client, provider):
     """Remote write carries labels the producer chose. Not this one."""
-    client.post(PATH, content=written(({"__name__": "cpu", "resource_id": "elsewhere"}, [(1.0, 1)])))
+    client.post(
+        PATH, content=written(({"__name__": "cpu", "resource_id": "elsewhere"}, [(1.0, 1)]))
+    )
 
     assert provider.written[0]["resource_id"] == "acme"
     assert "resource_id" not in provider.written[0]["labels"]

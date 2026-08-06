@@ -8,14 +8,17 @@ import cramjam
 from google.protobuf.message import DecodeError
 
 from datum.api.internals.remote.remote_write_pb2 import WriteRequest
-from datum.api.internals.schemas import MAX_BATCH, NAME
+from datum.api.internals.schemas import NAME
 from datum.config.clickhouse import RESOURCE_LABEL
+from datum.config.limits import MAX_BATCH, MAX_DECOMPRESSED
 
 NAME_LABEL = "__name__"
 # What Prometheus and vmagent send. A v2 request interns its strings in a
 # symbols table, so decoding it as v1 would yield labels that are not there.
 CONTENT_TYPE = "application/x-protobuf"
 V2 = "io.prometheus.write.v2.request"
+
+UNREADABLE = (DecodeError, cramjam.DecompressionError, ValueError, OSError)
 
 
 class RemoteWriteError(ValueError):
@@ -24,6 +27,10 @@ class RemoteWriteError(ValueError):
 
 class TooManySamples(RemoteWriteError):
     """More samples than one batch holds. Told apart so it answers 413."""
+
+
+class BodyTooLarge(RemoteWriteError):
+    """Decompresses past what a batch could hold. Also a 413."""
 
 
 def is_version_two(content_type: str) -> bool:
@@ -81,9 +88,36 @@ def _series(series) -> tuple[str, dict[str, str]]:
 
 
 def _parse(body: bytes) -> WriteRequest:
+    """Decompressed outside the `try`: an oversized body is a 413, and catching
+    it here would report it as an unreadable one."""
+    payload = _decompressed(body)
+    request = WriteRequest()
     try:
-        request = WriteRequest()
-        request.ParseFromString(bytes(cramjam.snappy.decompress_raw(body)))
-    except (DecodeError, cramjam.DecompressionError, ValueError, OSError) as unreadable:
-        raise RemoteWriteError(f"body is not a snappy WriteRequest: {unreadable}") from unreadable
+        request.ParseFromString(payload)
+    except UNREADABLE as unreadable:
+        raise RemoteWriteError(f"body is not a v1 WriteRequest: {unreadable}") from unreadable
     return request
+
+
+def _decompressed(body: bytes) -> bytes:
+    """Sized from the snappy header before a buffer exists, so a body that is
+    small on the wire cannot become a large one in memory."""
+    declared = _declared_length(body)
+    if declared > MAX_DECOMPRESSED:
+        raise BodyTooLarge(f"{declared} bytes decompressed, but the cap is {MAX_DECOMPRESSED}")
+
+    buffer = bytearray(declared)
+    try:
+        written = cramjam.snappy.decompress_raw_into(body, buffer)
+    except UNREADABLE as unreadable:
+        raise RemoteWriteError(f"body is not snappy: {unreadable}") from unreadable
+    return bytes(memoryview(buffer)[:written])
+
+
+def _declared_length(body: bytes) -> int:
+    """What the snappy header says it holds. Read, not trusted: it costs nothing
+    to lie here, so the number is checked before it is allocated against."""
+    try:
+        return cramjam.snappy.decompress_raw_len(body)
+    except UNREADABLE as unreadable:
+        raise RemoteWriteError(f"body is not snappy: {unreadable}") from unreadable

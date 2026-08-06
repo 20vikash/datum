@@ -6,6 +6,7 @@ from fastapi import FastAPI
 
 from datum.api import errors
 from datum.api.internals import ClickHouseProvider, MetricProvider, TokenVerifier
+from datum.api.middleware import BodyLimit
 from datum.api.routes import router
 from datum.config import Settings
 
@@ -60,6 +61,7 @@ def create_app(
     app.state.settings = settings or Settings.from_env()
     app.state.tokens = tokens or TokenVerifier.from_env()
     app.state.provider = provider
+    app.add_middleware(BodyLimit)
     errors.install(app)
     app.include_router(router)
 

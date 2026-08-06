@@ -6,9 +6,9 @@ from datetime import datetime
 from pydantic import BaseModel, Field, field_validator
 
 from datum.config.clickhouse import RESOURCE_LABEL
+from datum.config.limits import MAX_BATCH
 
 NAME = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
-MAX_BATCH = 10_000
 
 
 class QueryRequest(BaseModel):
