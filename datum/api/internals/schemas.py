@@ -6,7 +6,7 @@ from datetime import datetime
 from pydantic import BaseModel, Field, field_validator
 
 from datum.config.clickhouse import RESOURCE_LABEL
-from datum.config.limits import MAX_BATCH
+from datum.config.limits import MAX_BATCH, MAX_LABELS
 
 NAME = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
@@ -36,7 +36,7 @@ class Sample(BaseModel):
     metric: str = Field(pattern=NAME.pattern, max_length=200)
     value: float
     ts: datetime
-    labels: dict[str, str] = Field(default_factory=dict)
+    labels: dict[str, str] = Field(default_factory=dict, max_length=MAX_LABELS)
 
     @field_validator("labels")
     @classmethod

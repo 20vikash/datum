@@ -2,6 +2,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from datum import create_app
+from datum.config import MAX_LABELS
 from tests.conftest import SETTINGS, FakeProvider, mint
 
 SAMPLE = {"metric": "system_cpu_percent", "value": 12.5, "ts": "2026-08-05T10:00:00Z"}
@@ -88,3 +89,17 @@ def test_an_empty_batch_is_refused(client):
 )
 def test_an_unusable_sample_is_a_422(client, sample):
     assert post(client, sample).status_code == 422
+
+
+def test_both_write_paths_agree_on_how_wide_a_sample_is(client):
+    """Remote write caps labels off the wire; JSON has to match or the paths
+    disagree about what is storable."""
+    wide = {**SAMPLE, "labels": {f"label_{index}": "v" for index in range(MAX_LABELS + 1)}}
+
+    assert post(client, wide).status_code == 422
+
+
+def test_a_sample_of_exactly_the_label_cap_is_accepted(client):
+    fits = {**SAMPLE, "labels": {f"label_{index}": "v" for index in range(MAX_LABELS)}}
+
+    assert post(client, fits).status_code == 200
