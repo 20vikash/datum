@@ -3,19 +3,11 @@ from __future__ import annotations
 import re
 
 import clickhouse_connect
-from clickhouse_connect.driver.binding import format_query_value
 from clickhouse_connect.driver.client import SettingDef
 from clickhouse_connect.driver.exceptions import ClickHouseError, OperationalError
 
 from datum.api.internals.providers.base import MetricProvider, ProviderError, QueryRefused, Rows
-from datum.config.clickhouse import (
-    COLUMNS,
-    DATABASE,
-    RESOURCE_LABEL,
-    RESOURCE_SETTING,
-    TABLE,
-    get_schema,
-)
+from datum.config.clickhouse import COLUMNS, DATABASE, RESOURCE_SETTING, TABLE, get_schema
 
 GRANTS = "SHOW GRANTS FOR CURRENT_USER"
 GRANTED_ON = re.compile(r"\bON\s+(\S+)")
@@ -25,8 +17,8 @@ class ClickHouseProvider(MetricProvider):
     """Reads are passed through as written; ClickHouse is what refuses a bad one.
 
     `readonly=1` on every read means a query route cannot mutate even when the
-    credential could, and it is also what stops a caller resetting the two
-    settings that scope them to their own rows.
+    credential could, and it is also what stops a caller resetting the setting
+    that scopes them to their own rows.
     """
 
     def __init__(
@@ -69,14 +61,12 @@ class ClickHouseProvider(MetricProvider):
         return f"{self.database}.{self.table}"
 
     def get_read_settings(self, resource_id: str) -> dict:
-        literal = format_query_value(resource_id)
         return {
             "readonly": 1,
             "max_result_rows": self.max_rows,
             "result_overflow_mode": "break",
             "max_execution_time": int(self.timeout),
             RESOURCE_SETTING: resource_id,
-            "additional_table_filters": {self.qualified: f"{RESOURCE_LABEL} = {literal}"},
         }
 
     def ensure_schema(self) -> None:

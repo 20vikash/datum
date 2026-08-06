@@ -132,8 +132,8 @@ applied by ClickHouse: `readonly=1`, so a query route cannot mutate even if the
 credential could, plus a row cap and an execution timeout. When the cap is hit
 the answer comes back with `"truncated": true` rather than silently short.
 
-**A read only ever sees the token's own `resource_id`**, and three things enforce
-it. Together they are the tenant boundary; any one alone has a hole.
+**A read only ever sees the token's own `resource_id`**, and two things enforce
+it. Together they are the tenant boundary; either one alone has a hole.
 
 1. **A row policy on the table**, reading a per-request custom setting:
 
@@ -143,28 +143,28 @@ it. Together they are the tenant boundary; any one alone has a hole.
    TO datum;
    ```
 
-   This binds to the *table*, so it holds however the rows are reached. datum
+   This binds to the *table*, so it holds however the rows are reached —
+   including `merge()`, which reads the same rows under a different name. datum
    creates it in `ensure_schema` alongside the table, because a deployment with
    the table but no policy reads across tenants.
 
-2. **`additional_table_filters`**, which binds to the *name written in the
-   query*. Narrower than the policy, kept as the backstop for a direct read on a
-   server whose policy somehow went missing.
-
-3. **Grants**, which decide what else the credential can see at all. Without them
+2. **Grants**, which decide what else the credential can see at all. Without them
    `system.query_log` hands over other tenants' SQL and `url()` fetches from the
    ClickHouse host.
 
-`readonly=1` is what stops a caller resetting either setting from inside their
-own SQL. `/metrics` and `/metrics/{metric}/columns` are scoped the same way, so a
+`additional_table_filters` was a third layer and was removed: on ClickHouse 26.7
+it is applied after projection, so every query that did not select `resource_id`
+failed with `NOT_FOUND_COLUMN_IN_BLOCK`. It also only ever bound to the name
+written in the query, which is the weakness the row policy exists to cover.
+
+`readonly=1` is what stops a caller resetting the setting from inside their own
+SQL. `/metrics` and `/metrics/{metric}/columns` are scoped the same way, so a
 leaked read token cannot even enumerate another machine's metric names.
 
-Measured against ClickHouse 26.8, as `acme`, with rows for two tenants present:
-`SELECT *`, an alias, a subquery, a CTE, a union, a self-join, `IN (subquery)`,
-`merge('datum', '^samples$')` and `count()` all returned `acme` and nothing else;
-`remote()`, `url()`, `file()`, `system.processes`, `system.clusters`,
-`system.users`, and both attempts to override the settings in SQL were refused
-outright.
+Measured in production on ClickHouse 26.7 as `pilot-staging`, with two tenants
+present: a direct read, a subquery, a union, `merge('datum', '^samples$')` and
+`count()` all returned that tenant and nothing else; `remote()`,
+`system.query_log`, and overriding the setting in SQL were all refused.
 
 ### Capping request bodies
 
