@@ -50,7 +50,6 @@ ClickHouse stores them, and consumers read them back with SQL.
     - `limits.py` — every cap on one request, in the order a request meets them
   - `api/app.py` — `create_app(settings, tokens, provider)`; builds the provider once, at
     startup, and creates the schema if it is missing
-  - `api/middleware.py` — `BodyLimit`; the only cap that runs before an allocation
   - `api/dependencies.py` — `Provider`, `Caller`, `Reader`, `Writer`; the gates on `/v1`
   - `api/errors.py` — every failure a caller can cause, mapped to its status
   - `api/routes/v1/` — `query.py` and `ingest.py`, mounted in `v1/__init__.py`
@@ -145,11 +144,10 @@ datum-beacon ───────────┘ evaluates rules
 - The environment is managed by `uv`. Use `uv run`, `uv add`, `uv sync`.
 - Run `uv run pytest` and `uv run ruff check .` after changes.
 - A schema change needs a matching change in `COLUMNS`, and a test asserting the insert order.
-- Every cap lives in `config/limits.py`, and they are a ladder, not alternatives. `MAX_BODY` is
-  the only one that runs before an allocation, so it is what makes the rest affordable;
-  `MAX_DECOMPRESSED` bounds what snappy expands to, which the body cap cannot see;
-  `MAX_BATCH` bounds what ClickHouse is asked to swallow, and is reached only after a parse.
-  Adding a cap means adding it there and saying which of those three it is.
+- Every cap lives in `config/limits.py`, and every one of them is reached after the body is
+  read. What bounds the raw body is `client_max_body_size` in the vhost, not datum: the caps
+  here bound what a body is allowed to *become*, not what arrives. Remote write is the
+  exception — its counts come off the wire before protobuf builds anything.
 - **Remote write counts what a body holds before protobuf builds it.** The objects are the
   cost, not the bytes: a series is ~193 bytes parsed against 17 sent, so 987k empty series
   cost 0.8 MB on the wire and measured 191 MB parsed, while passing a readings cap that

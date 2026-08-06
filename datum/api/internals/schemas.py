@@ -6,13 +6,17 @@ from datetime import datetime
 from pydantic import BaseModel, Field, field_validator
 
 from datum.config.clickhouse import RESOURCE_LABEL
-from datum.config.limits import MAX_BATCH, MAX_LABELS
+from datum.config.limits import MAX_BATCH, MAX_LABELS, MAX_SQL
 
 NAME = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
 
 class QueryRequest(BaseModel):
-    sql: str = Field(examples=["SELECT ts, value FROM datum.samples WHERE metric = 'cpu'"])
+    sql: str = Field(
+        min_length=1,
+        max_length=MAX_SQL,
+        examples=["SELECT ts, value FROM datum.samples WHERE metric = 'cpu'"],
+    )
 
 
 class QueryResponse(BaseModel):

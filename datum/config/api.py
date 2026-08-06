@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 
-from datum.config.clickhouse import DATABASE, TABLE, check_identifier
+from datum.config.clickhouse import DATABASE, TABLE
 from datum.config.limits import MAX_ROWS, TIMEOUT
+
+IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
 
 @dataclass(frozen=True)
@@ -20,11 +23,18 @@ class Settings:
     max_rows: int = MAX_ROWS
     timeout: float = TIMEOUT
 
+    @classmethod
+    def check_identifier(cls, name: str, what: str) -> str:
+        """Checked here, so no construction path puts an unquotable name into SQL."""
+        if not IDENTIFIER.match(name):
+            raise ValueError(f"{what} must match {IDENTIFIER.pattern}, not {name!r}")
+        return name
+
     def __post_init__(self):
         """Checked here, so no construction path puts an unquotable name into SQL."""
-        check_identifier(self.database, "DATUM_CLICKHOUSE_DATABASE")
-        check_identifier(self.table, "DATUM_CLICKHOUSE_TABLE")
-        check_identifier(self.username, "DATUM_CLICKHOUSE_USER")
+        self.check_identifier(self.database, "DATUM_CLICKHOUSE_DATABASE")
+        self.check_identifier(self.table, "DATUM_CLICKHOUSE_TABLE")
+        self.check_identifier(self.username, "DATUM_CLICKHOUSE_USER")
 
     @classmethod
     def from_env(cls) -> Settings:

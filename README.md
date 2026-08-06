@@ -166,6 +166,20 @@ Measured against ClickHouse 26.8, as `acme`, with rows for two tenants present:
 `system.users`, and both attempts to override the settings in SQL were refused
 outright.
 
+### Capping request bodies
+
+datum does not cap the raw body itself; the reverse proxy does. Every limit in
+`config/limits.py` is reached *after* the body is read, so without a proxy limit
+a large POST is resident before anything checks it. The datum vhost sets:
+
+```nginx
+client_max_body_size 32m;
+```
+
+Keep that line. A deployment that drops it has no bound on a request body at
+all, and datum listens on `127.0.0.1:8000`, so anything reaching the port
+directly is likewise uncapped.
+
 ### Setting the ClickHouse side up
 
 The custom setting needs a server-side prefix, or **every read fails** — loudly,
@@ -235,8 +249,7 @@ Signatures must be RSA or ECDSA. HMAC is never accepted.
 | 400 | ClickHouse refused the query, or the remote write body was unreadable |
 | 401 | JWT missing, unsigned, expired, signed by the wrong key, or naming no `resource_id` |
 | 403 | the token may not do that: no `read`, or no `write` |
-| 411 | no `Content-Length`, so the body cap could not be applied |
-| 413 | body over 8 MB, decompressing past 12 MB, more than 10,000 samples or series, or a series wider than 64 labels |
+| 413 | decompressing past 12 MB, more than 10,000 samples or series, or a series wider than 64 labels |
 | 415 | remote write v2, which is not read here |
 | 422 | the request body broke the schema |
 | 503 | datum is up, ClickHouse is not |

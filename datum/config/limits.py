@@ -1,11 +1,7 @@
 from __future__ import annotations
 
-# Bytes on the wire, refused before anything reads them. Every route, because
-# `/v1/query` carries no other cap at all.
-MAX_BODY = 8 * 1024 * 1024
-
-# Bytes after snappy, remote write only. Measured at roughly 20:1 on protobuf,
-# so MAX_BODY alone does not bound what a body costs once it is open.
+# Bytes after snappy, remote write only. Snappy runs to roughly 20:1 on
+# protobuf, so the body size nginx allows does not bound what one costs open.
 MAX_DECOMPRESSED = 12 * 1024 * 1024
 
 # Readings in one write, both paths. Remote write counts them off the wire
@@ -17,6 +13,10 @@ MAX_BATCH = 10_000
 # carrying a million costs a fraction of a megabyte to send. Real producers use
 # a handful: node_exporter's widest is well under twenty.
 MAX_LABELS = 64
+
+# Characters in one read. Reached after the body is parsed, so it bounds what
+# ClickHouse is asked to compile, not what datum holds.
+MAX_SQL = 64 * 1024
 
 # Rows in one read, and seconds to connect or execute. Applied by ClickHouse
 # rather than here, and both are overridable per deployment.
