@@ -132,11 +132,75 @@ applied by ClickHouse: `readonly=1`, so a query route cannot mutate even if the
 credential could, plus a row cap and an execution timeout. When the cap is hit
 the answer comes back with `"truncated": true` rather than silently short.
 
-**A read only ever sees the token's own `resource_id`.** That is
-`additional_table_filters`, which ClickHouse applies to the table itself, so it
-holds however the query is written — `SELECT *`, a subquery, a union. `/metrics`
-and `/metrics/{metric}/columns` are scoped the same way, so a leaked read token
-cannot even enumerate another machine's metric names.
+**A read only ever sees the token's own `resource_id`**, and three things enforce
+it. Together they are the tenant boundary; any one alone has a hole.
+
+1. **A row policy on the table**, reading a per-request custom setting:
+
+   ```sql
+   CREATE ROW POLICY OR REPLACE tenant ON datum.samples
+   USING resource_id = getSetting('SQL_datum_resource_id')
+   TO datum;
+   ```
+
+   This binds to the *table*, so it holds however the rows are reached. datum
+   creates it in `ensure_schema` alongside the table, because a deployment with
+   the table but no policy reads across tenants.
+
+2. **`additional_table_filters`**, which binds to the *name written in the
+   query*. Narrower than the policy, kept as the backstop for a direct read on a
+   server whose policy somehow went missing.
+
+3. **Grants**, which decide what else the credential can see at all. Without them
+   `system.query_log` hands over other tenants' SQL and `url()` fetches from the
+   ClickHouse host.
+
+`readonly=1` is what stops a caller resetting either setting from inside their
+own SQL. `/metrics` and `/metrics/{metric}/columns` are scoped the same way, so a
+leaked read token cannot even enumerate another machine's metric names.
+
+Measured against ClickHouse 26.8, as `acme`, with rows for two tenants present:
+`SELECT *`, an alias, a subquery, a CTE, a union, a self-join, `IN (subquery)`,
+`merge('datum', '^samples$')` and `count()` all returned `acme` and nothing else;
+`remote()`, `url()`, `file()`, `system.query_log`, and both attempts to override
+the settings in SQL were refused outright.
+
+### Setting the ClickHouse side up
+
+The custom setting needs a server-side prefix, or **every read fails** — loudly,
+not silently, but it fails. In `config.d/datum.xml`:
+
+```xml
+<clickhouse>
+    <custom_settings_prefixes>SQL_</custom_settings_prefixes>
+</clickhouse>
+```
+
+Then the API's user, granted only what it uses:
+
+```sql
+CREATE USER datum IDENTIFIED BY '...';
+REVOKE ALL ON *.* FROM datum;
+GRANT SELECT, INSERT ON datum.samples TO datum;
+GRANT CREATE DATABASE, CREATE TABLE ON datum.* TO datum;
+GRANT CREATE ROW POLICY ON datum.* TO datum;
+```
+
+The last two are what `ensure_schema` needs. The revoke is the important line:
+it is what removes `system.*` and the `remote`/`url`/`file`/`s3` table
+functions, and no filter substitutes for it.
+
+**datum checks this at startup and refuses to run without it.** `ensure_schema`
+reads `SHOW GRANTS FOR CURRENT_USER` and stops if the credential holds anything
+beyond `datum.samples` and `datum.*`, naming the grant. It checks rather than
+applies: revoking its own grants would mean holding `GRANT OPTION` on them, and
+a credential that can narrow itself can widen itself again.
+
+So a deployment that skips the revoke fails loudly on boot rather than serving
+reads that can walk out through `system.*`.
+
+Insights reads with its **own** user and is deliberately outside the policy —
+`TO datum` names the API's user only, so the BI path still sees the fleet.
 
 ## Tokens
 

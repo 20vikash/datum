@@ -1,5 +1,6 @@
 from datetime import UTC, datetime
 
+import clickhouse_connect
 import pytest
 from clickhouse_connect.driver.exceptions import DatabaseError, OperationalError
 
@@ -9,7 +10,7 @@ from datum.api.internals.providers import (
     ProviderError,
     QueryRefused,
 )
-from datum.config.clickhouse import get_schema
+from datum.config.clickhouse import RESOURCE_SETTING, get_schema
 
 
 class FakeClient:
@@ -19,6 +20,7 @@ class FakeClient:
         self.columns = list(columns)
         self.rows = list(rows)
         self.error = error
+        self.server_settings: dict = {}
         self.queries: list[tuple] = []
         self.commands: list[str] = []
         self.inserts: list[tuple] = []
@@ -168,9 +170,78 @@ def test_an_empty_batch_touches_the_store_not_at_all():
 def test_the_schema_is_created_where_it_is_configured():
     client = FakeClient()
 
-    build(client, database="other", table="readings").ensure_schema()
+    build(client, database="other", table="readings", username="reader").ensure_schema()
 
-    assert client.commands == list(get_schema("other", "readings"))
+    assert client.commands == list(get_schema("other", "readings", "reader"))
+
+
+def test_the_policy_is_created_with_the_table_not_after_it():
+    """A deployment with the table but no policy reads across tenants through
+    `merge()`, so the two are not separable."""
+    client = FakeClient()
+
+    build(client).ensure_schema()
+
+    policy = [command for command in client.commands if "ROW POLICY" in command]
+    assert len(policy) == 1
+    assert "ON datum.samples" in policy[0]
+    assert f"getSetting('{RESOURCE_SETTING}')" in policy[0]
+
+
+def test_a_read_carries_both_filters():
+    """The policy binds to the table and holds however the rows are reached; the
+    table filter covers the direct read if a server's policy is missing."""
+    client = FakeClient()
+
+    build(client).fetch("SELECT 1", RESOURCE)
+
+    settings = client.queries[0][2]
+    assert settings[RESOURCE_SETTING] == RESOURCE
+    assert settings["additional_table_filters"] == {"datum.samples": "resource_id = 'acme'"}
+
+
+# What ClickHouse 26.8 actually prints for SHOW GRANTS, not a paraphrase of it.
+SCOPED_GRANTS = [
+    "GRANT CREATE DATABASE, CREATE TABLE, CREATE ROW POLICY ON datum.* TO datum",
+    "GRANT SELECT, INSERT ON datum.samples TO datum",
+]
+
+
+def test_the_documented_grants_are_enough_to_start():
+    client = FakeClient(columns=["grant"], rows=[[line] for line in SCOPED_GRANTS])
+
+    build(client).check_privileges()
+
+
+@pytest.mark.parametrize(
+    "grant",
+    [
+        "GRANT SELECT ON *.* TO datum",
+        "GRANT SELECT ON system.* TO datum",
+        "GRANT SELECT ON other.* TO datum",
+    ],
+)
+def test_a_credential_that_reaches_past_its_table_stops_startup(grant):
+    """The row policy covers one table. A grant past it is a read that leaves
+    its resource_id through a table no policy sees."""
+    rows = [[line] for line in (*SCOPED_GRANTS, grant)]
+    client = FakeClient(columns=["grant"], rows=rows)
+
+    with pytest.raises(ProviderError, match="holds grants past datum.samples") as refused:
+        build(client).check_privileges()
+
+    assert grant in str(refused.value)
+
+
+def test_the_driver_is_told_about_the_custom_setting(monkeypatch):
+    """It is absent from system.settings, so an untaught driver drops it and
+    every read fails closed."""
+    client = FakeClient()
+    monkeypatch.setattr(clickhouse_connect, "get_client", lambda **_: client)
+
+    provider = ClickHouseProvider(host="localhost")
+
+    assert provider.client.server_settings[RESOURCE_SETTING].name == RESOURCE_SETTING
 
 
 def test_label_lookups_are_parameterised_not_interpolated():

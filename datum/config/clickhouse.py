@@ -37,9 +37,28 @@ ENGINE = MergeTree
 PARTITION BY toYYYYMM(ts)
 ORDER BY (resource_id, metric, ts)"""
 
+POLICY_SCHEMA = """\
+CREATE ROW POLICY OR REPLACE {policy} ON {database}.{table}
+USING {label} = getSetting('{setting}')
+TO {username}"""
 
-def get_schema(database: str = DATABASE, table: str = TABLE):
+
+POLICY = "tenant"
+RESOURCE_SETTING = "SQL_datum_resource_id"
+
+
+def get_schema(database: str = DATABASE, table: str = TABLE, username: str = "default"):
+    """The table and the policy that scopes it, created together: a deployment
+    with the table but not the policy reads across tenants through `merge()`."""
     return (
         f"CREATE DATABASE IF NOT EXISTS {database}",
         SCHEMA.format(database=database, table=table),
+        POLICY_SCHEMA.format(
+            policy=POLICY,
+            database=database,
+            table=table,
+            label=RESOURCE_LABEL,
+            setting=RESOURCE_SETTING,
+            username=username,
+        ),
     )

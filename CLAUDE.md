@@ -20,9 +20,16 @@ ClickHouse stores them, and consumers read them back with SQL.
   name rule and you change both, or the paths disagree about what is storable.
 - **Reads are passed through, not translated.** ClickHouse speaks SQL, so datum does not
   interpret it. There is no planner and no refusal list. What constrains a read is applied by
-  ClickHouse — `readonly=1`, a row cap, a timeout, and `additional_table_filters` pinning the
-  table to the token's `resource_id` — never by parsing SQL in Python. Every read takes a
-  `resource_id`, not just `/query`: metric and label listings are the same table.
+  ClickHouse — `readonly=1`, a row cap, a timeout — never by parsing SQL in Python. Every read
+  takes a `resource_id`, not just `/query`: metric and label listings are the same table.
+- **The tenant boundary is three things, and none of them is Python.** A row policy reading
+  `RESOURCE_SETTING` binds to the table, so it holds however the rows are reached;
+  `additional_table_filters` binds to the name in the query and is the backstop;
+  grants decide what the credential can reach at all. `merge('datum', '^samples$')` defeats
+  the second and not the first — that is measured, not assumed, and it is why both exist.
+  The policy is created in `ensure_schema`, because a table without it is a table that leaks.
+  Grants are *checked* there too, never applied: a credential that can narrow itself can widen
+  itself again, so datum reads `SHOW GRANTS` and refuses to start on anything wider.
 - **Numbers only.** Datum stores metrics. Slow queries, request traces, and anything with free
   text belong somewhere else.
 - **Insights connects to ClickHouse directly**, with its own read-only user. `/v1/query` exists

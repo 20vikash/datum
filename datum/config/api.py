@@ -25,6 +25,7 @@ class Settings:
         put an unquotable name into the SQL the provider builds."""
         check_identifier(self.database, "DATUM_CLICKHOUSE_DATABASE")
         check_identifier(self.table, "DATUM_CLICKHOUSE_TABLE")
+        check_identifier(self.username, "DATUM_CLICKHOUSE_USER")
 
     @classmethod
     def from_env(cls) -> Settings:
