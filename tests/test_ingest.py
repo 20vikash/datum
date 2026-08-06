@@ -53,11 +53,12 @@ def test_a_reader_cannot_write(tokens):
     assert "write" in response.json()["detail"]
 
 
-def test_a_token_without_a_resource_id_cannot_write(tokens):
+def test_a_token_without_a_resource_id_is_not_an_identity(tokens):
+    """401, not 403: it is not a caller whose access we then judge."""
     with as_client(tokens, {"access": ["read", "write"]}) as client:
         response = post(client, SAMPLE)
 
-    assert response.status_code == 403
+    assert response.status_code == 401
 
 
 def test_a_writer_cannot_read(tokens):

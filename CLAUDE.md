@@ -20,7 +20,9 @@ ClickHouse stores them, and consumers read them back with SQL.
   name rule and you change both, or the paths disagree about what is storable.
 - **Reads are passed through, not translated.** ClickHouse speaks SQL, so datum does not
   interpret it. There is no planner and no refusal list. What constrains a read is applied by
-  ClickHouse — `readonly=1`, a row cap, a timeout — never by parsing SQL in Python.
+  ClickHouse — `readonly=1`, a row cap, a timeout, and `additional_table_filters` pinning the
+  table to the token's `resource_id` — never by parsing SQL in Python. Every read takes a
+  `resource_id`, not just `/query`: metric and label listings are the same table.
 - **Numbers only.** Datum stores metrics. Slow queries, request traces, and anything with free
   text belong somewhere else.
 - **Insights connects to ClickHouse directly**, with its own read-only user. `/v1/query` exists
@@ -78,9 +80,10 @@ datum-beacon ───────────┘ evaluates rules
 ## Design Expectations
 
 - **Identity comes from the token, never the request body.** The token carries `resource_id`,
-  which datum stamps on every row, and `access`, which says whether it may read, write or both.
-  A `resource_id` in the body is dropped, not honoured, and there is no field for it in the
-  wire schema. A token that may write but names no `resource_id` is refused outright.
+  which datum stamps on every row and scopes every read to, and `access`, which says whether it
+  may read, write or both. A `resource_id` in the body is dropped, not honoured, and there is
+  no field for it in the wire schema. `resource_id` is required: a token without one resolves
+  to no `Identity` at all, so it is a 401, not a 403.
 - One label, not a set. Which team owns a machine, or which cluster it sits in, is Central's to
   answer; putting it on every sample makes it a fact frozen at write time.
 - Signatures are RSA or ECDSA. HMAC is never accepted.

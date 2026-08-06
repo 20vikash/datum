@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-from datum.config.clickhouse import DATABASE, TABLE, get_schema
+from datum.config.clickhouse import DATABASE, TABLE
 
 MAX_ROWS = 100_000
 TIMEOUT = 30.0
@@ -37,7 +37,3 @@ class Settings:
             max_rows=int(os.environ.get("DATUM_MAX_ROWS", cls.max_rows)),
             timeout=float(os.environ.get("DATUM_TIMEOUT", cls.timeout)),
         )
-
-    @property
-    def statements(self) -> tuple[str, ...]:
-        return get_schema(self.database, self.table)

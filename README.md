@@ -132,6 +132,12 @@ applied by ClickHouse: `readonly=1`, so a query route cannot mutate even if the
 credential could, plus a row cap and an execution timeout. When the cap is hit
 the answer comes back with `"truncated": true` rather than silently short.
 
+**A read only ever sees the token's own `resource_id`.** That is
+`additional_table_filters`, which ClickHouse applies to the table itself, so it
+holds however the query is written — `SELECT *`, a subquery, a union. `/metrics`
+and `/metrics/{metric}/columns` are scoped the same way, so a leaked read token
+cannot even enumerate another machine's metric names.
+
 ## Tokens
 
 Every call carries a JWT that Central signed: `Authorization: Bearer <jwt>`.
@@ -149,9 +155,9 @@ accepted here. A token that claims neither gets a 403 on every route.
 
 **`resource_id` says where the metrics came from**, and it is the only label the
 token carries. One machine, one id. Everything else — which team owns it, which
-cluster it sits in — is Central's to answer, not a label on every sample. A
-token that may write but names no `resource_id` is refused: a row nobody can be
-attributed to is worse than a rejected batch.
+cluster it sits in — is Central's to answer, not a label on every sample. It is
+required: writes are stamped with it and reads are scoped by it, so a token
+without one is a 401 rather than a caller whose access is then judged.
 
 Signatures must be RSA or ECDSA. HMAC is never accepted.
 
@@ -162,8 +168,8 @@ Signatures must be RSA or ECDSA. HMAC is never accepted.
 | 200 | answered, or stored |
 | 204 | stored, via remote write |
 | 400 | ClickHouse refused the query, or the remote write body was unreadable |
-| 401 | JWT missing, unsigned, expired, or signed by the wrong key |
-| 403 | the token may not do that: no `read`, no `write`, or no `resource_id` |
+| 401 | JWT missing, unsigned, expired, signed by the wrong key, or naming no `resource_id` |
+| 403 | the token may not do that: no `read`, or no `write` |
 | 413 | more than 10,000 samples in one remote write request |
 | 415 | remote write v2, which is not read here |
 | 422 | the request body broke the schema |

@@ -76,7 +76,7 @@ def tamper(token: str) -> str:
     header, payload, signature = token.split(".")
     index = len(signature) // 2
     swapped = "A" if signature[index] != "A" else "B"
-    return f"{header}.{payload}.{signature[:index]}{swapped}{signature[index + 1:]}"
+    return f"{header}.{payload}.{signature[:index]}{swapped}{signature[index + 1 :]}"
 
 
 class FakeProvider(MetricProvider):
@@ -91,22 +91,21 @@ class FakeProvider(MetricProvider):
     def ensure_schema(self):
         self.prepared = True
 
-    def fetch(self, sql):
-        self.fetched.append(sql)
+    def fetch(self, sql, resource_id):
+        self.fetched.append((sql, resource_id))
         return Rows(columns=["ts", "value"])
 
     def ingest(self, rows):
         self.written.extend(rows)
         return len(rows)
 
-    @property
-    def metrics(self):
+    def get_metrics(self, resource_id):
         return ["system_cpu_percent"]
 
-    def get_labels(self, metric):
+    def get_labels(self, metric, resource_id):
         return ["region"]
 
-    def get_label_values(self, metric, label):
+    def get_label_values(self, metric, label, resource_id):
         return ["ap_south_1"]
 
 

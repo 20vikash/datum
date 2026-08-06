@@ -40,7 +40,7 @@ def test_query_passes_the_sql_through_untouched(client, provider):
     response = client.post("/v1/query", json={"sql": sql})
 
     assert response.status_code == 200
-    assert provider.fetched == [sql]
+    assert provider.fetched == [(sql, "acme")]
     assert response.json() == {"columns": ["ts", "value"], "rows": [], "truncated": False}
 
 

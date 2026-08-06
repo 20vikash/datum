@@ -33,26 +33,25 @@ class MetricProvider(ABC):
         """Make the store ready to accept samples. Idempotent."""
 
     @abstractmethod
-    def fetch(self, sql: str, resource_id: str | None = None) -> Rows:
-        """Rows for one read, as the store answered it. Additional filtering by resource_id is optional, but secure."""
+    def fetch(self, sql: str, resource_id: str) -> Rows:
+        """Rows for one read, as the store answered it, scoped to one resource_id."""
 
     @abstractmethod
     def ingest(self, rows: list[dict]) -> int:
         """Write one batch, keyed by column name. Returns rows accepted."""
 
-    @property
     @abstractmethod
-    def metrics(self) -> list[str]:
-        """Every metric name the store knows about."""
+    def get_metrics(self, resource_id: str) -> list[str]:
+        """Metric names one resource_id has written."""
 
     @abstractmethod
-    def get_labels(self, metric: str) -> list[str]:
+    def get_labels(self, metric: str, resource_id: str) -> list[str]:
         """Label names carried by one metric."""
 
     @abstractmethod
-    def get_label_values(self, metric: str, label: str) -> list[str]:
+    def get_label_values(self, metric: str, label: str, resource_id: str) -> list[str]:
         """Distinct values of one label on one metric."""
 
-    def get_columns(self, metric: str) -> list[str]:
+    def get_columns(self, metric: str, resource_id: str) -> list[str]:
         """The table as a caller sees it, with the label map flattened out."""
-        return ["ts", "metric", RESOURCE_LABEL, *self.get_labels(metric), "value"]
+        return ["ts", "metric", RESOURCE_LABEL, *self.get_labels(metric, resource_id), "value"]

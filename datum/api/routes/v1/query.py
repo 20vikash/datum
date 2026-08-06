@@ -16,10 +16,10 @@ def query(body: QueryRequest, provider: Provider, reader: Reader) -> QueryRespon
 
 
 @router.get("/metrics")
-def metrics(provider: Provider, _: Reader) -> MetricList:
-    return MetricList(metrics=provider.metrics)
+def metrics(provider: Provider, reader: Reader) -> MetricList:
+    return MetricList(metrics=provider.get_metrics(reader.resource_id))
 
 
 @router.get("/metrics/{metric}/columns")
-def columns(metric: str, provider: Provider, _: Reader) -> ColumnList:
-    return ColumnList(metric=metric, columns=provider.get_columns(metric))
+def columns(metric: str, provider: Provider, reader: Reader) -> ColumnList:
+    return ColumnList(metric=metric, columns=provider.get_columns(metric, reader.resource_id))

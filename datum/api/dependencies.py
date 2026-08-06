@@ -41,9 +41,7 @@ def get_reader(identity: Caller) -> Identity:
 def get_writer(identity: Caller) -> str:
     """The resource id stamped on every written row."""
     if not identity.can_write:
-        raise HTTPException(
-            status.HTTP_403_FORBIDDEN, detail="Token cannot write, or names no resource_id."
-        )
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Token cannot write.")
     return identity.resource_id
 
 

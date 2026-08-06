@@ -12,11 +12,15 @@ def test_a_token_signed_by_someone_else_is_refused(tokens):
     from cryptography.hazmat.primitives import serialization
     from cryptography.hazmat.primitives.asymmetric import rsa
 
-    other = rsa.generate_private_key(public_exponent=65537, key_size=2048).private_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PrivateFormat.PKCS8,
-        encryption_algorithm=serialization.NoEncryption(),
-    ).decode()
+    other = (
+        rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        .private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        )
+        .decode()
+    )
 
     assert tokens.resolve(mint(key=other)) is None
 
@@ -47,13 +51,14 @@ def test_the_identity_is_the_resource_id_and_what_it_may_do():
 
 
 def test_access_may_be_written_as_one_string():
-    assert Identity.from_claims({"access": "read write"}).can_read is True
+    claims = {"resource_id": "acme", "access": "read write"}
+
+    assert Identity.from_claims(claims).can_read is True
 
 
-def test_a_token_claiming_nothing_may_do_nothing():
-    identity = Identity.from_claims({})
+def test_a_token_claiming_no_access_may_do_nothing():
+    identity = Identity.from_claims({"resource_id": "acme"})
 
-    assert identity == Identity()
     assert (identity.can_read, identity.can_write) == (False, False)
 
 
@@ -87,11 +92,10 @@ def test_auth_runs_before_validation(anonymous):
     assert response.status_code == 401
 
 
-def test_a_writer_without_a_resource_id_cannot_write():
-    """Nothing is stored that cannot be attributed to something."""
-    identity = Identity.from_claims({"access": ["read", "write"]})
-
-    assert (identity.can_read, identity.can_write) == (True, False)
+def test_a_token_without_a_resource_id_is_no_identity_at_all(tokens):
+    """Reads are scoped by it and writes are stamped with it, so a token
+    without one has nothing to address."""
+    assert tokens.resolve(mint({"access": ["read", "write"]})) is None
 
 
 def test_the_public_key_is_what_gates_access():

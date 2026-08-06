@@ -26,7 +26,6 @@ def get_provider(settings: Settings) -> MetricProvider:
         password=settings.password,
         database=settings.database,
         table=settings.table,
-        statements=settings.statements,
         max_rows=settings.max_rows,
         timeout=settings.timeout,
     )

@@ -32,7 +32,7 @@ class Identity:
     claims neither gets nothing here.
     """
 
-    resource_id: str = ""
+    resource_id: str
     access: frozenset[str] = frozenset()
 
     @property
@@ -41,16 +41,20 @@ class Identity:
 
     @property
     def can_write(self) -> bool:
-        """Nothing is written that cannot be attributed, so the id is required."""
-        return WRITE in self.access and bool(self.resource_id)
+        return WRITE in self.access
 
     @classmethod
     def from_claims(cls, claims: dict) -> Identity:
+        """No resource_id, no identity: reads are scoped by it and writes are
+        stamped with it, so a token without one has nothing to address."""
+        resource_id = claims.get(RESOURCE_LABEL)
+        if not resource_id:
+            raise jwt.InvalidTokenError(f"Token carries no {RESOURCE_LABEL}.")
         access = claims.get(ACCESS_CLAIM) or ()
         if isinstance(access, str):
             access = access.split()
         return cls(
-            resource_id=str(claims.get(RESOURCE_LABEL) or ""),
+            resource_id=str(resource_id),
             access=frozenset(str(entry) for entry in access),
         )
 
@@ -90,10 +94,9 @@ class TokenVerifier:
         if not self.is_configured:
             return None
         try:
-            claims = self._decode(token)
+            return Identity.from_claims(self._decode(token))
         except (jwt.InvalidTokenError, jwt.PyJWKClientError):
             return None
-        return Identity.from_claims(claims)
 
     def _decode(self, token: str) -> dict:
         if not self.oidc_issuer:

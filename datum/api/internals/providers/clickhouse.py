@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import clickhouse_connect
+from clickhouse_connect.driver.binding import format_query_value
 from clickhouse_connect.driver.exceptions import ClickHouseError, OperationalError
 
 from datum.api.internals.providers.base import MetricProvider, ProviderError, QueryRefused, Rows
-from datum.config.clickhouse import COLUMNS, DATABASE, TABLE
+from datum.config.clickhouse import COLUMNS, DATABASE, RESOURCE_LABEL, TABLE, get_schema
 
 
 class ClickHouseProvider(MetricProvider):
@@ -22,13 +23,11 @@ class ClickHouseProvider(MetricProvider):
         password: str = "",
         database: str = DATABASE,
         table: str = TABLE,
-        statements: tuple[str, ...] = (),
         max_rows: int = 100_000,
         timeout: float = 30.0,
     ):
         self.database = database
         self.table = table
-        self.statements = statements
         self.max_rows = max_rows
         self.timeout = timeout
         self._connection = {
@@ -52,22 +51,24 @@ class ClickHouseProvider(MetricProvider):
     def qualified(self) -> str:
         return f"{self.database}.{self.table}"
 
-    @property
-    def read_settings(self) -> dict:
+    def get_read_settings(self, resource_id: str) -> dict:
+        """`additional_table_filters` is applied to the table by ClickHouse, so no
+        SQL a caller can write reads past their own resource_id."""
+        literal = format_query_value(resource_id)
         return {
             "readonly": 1,
             "max_result_rows": self.max_rows,
             "result_overflow_mode": "break",
             "max_execution_time": int(self.timeout),
+            "additional_table_filters": {self.qualified: f"{RESOURCE_LABEL} = {literal}"},
         }
 
     def ensure_schema(self) -> None:
-        for statement in self.statements:
+        for statement in get_schema(self.database, self.table):
             self._run(self.client.command, statement)
 
-    def fetch(self, sql: str, resource_id: str | None = None) -> Rows:
-        # Force a resource_id filter so that only the token owner's rows can be read incase a read token is leaked?
-        result = self._read(sql, parameters={"resource_id": resource_id} if resource_id else None)
+    def fetch(self, sql: str, resource_id: str) -> Rows:
+        result = self._read(sql, resource_id)
         columns = list(result.column_names)
         rows = [dict(zip(columns, row)) for row in result.result_rows]
         return Rows(columns=columns, rows=rows, truncated=len(rows) >= self.max_rows)
@@ -85,27 +86,36 @@ class ClickHouseProvider(MetricProvider):
         )
         return len(rows)
 
-    @property
-    def metrics(self) -> list[str]:
+    def get_metrics(self, resource_id: str) -> list[str]:
         sql = f"SELECT DISTINCT metric FROM {self.qualified} ORDER BY metric"
-        return [row[0] for row in self._read(sql).result_rows]
+        return [row[0] for row in self._read(sql, resource_id=resource_id).result_rows]
 
-    def get_labels(self, metric: str) -> list[str]:
+    def get_labels(self, metric: str, resource_id: str) -> list[str]:
         sql = (
             f"SELECT DISTINCT arrayJoin(mapKeys(labels)) AS label FROM {self.qualified} "
             "WHERE metric = %(metric)s ORDER BY label"
         )
-        return [row[0] for row in self._read(sql, {"metric": metric}).result_rows]
+        return [
+            row[0]
+            for row in self._read(
+                sql, resource_id=resource_id, parameters={"metric": metric}
+            ).result_rows
+        ]
 
-    def get_label_values(self, metric: str, label: str) -> list[str]:
+    def get_label_values(self, metric: str, label: str, resource_id: str) -> list[str]:
         sql = (
             f"SELECT DISTINCT labels[%(label)s] AS value FROM {self.qualified} "
             "WHERE metric = %(metric)s AND has(mapKeys(labels), %(label)s) ORDER BY value"
         )
-        return [row[0] for row in self._read(sql, {"metric": metric, "label": label}).result_rows]
+        parameters = {"metric": metric, "label": label}
+        return [
+            row[0]
+            for row in self._read(sql, resource_id=resource_id, parameters=parameters).result_rows
+        ]
 
-    def _read(self, sql: str, parameters: dict | None = None):
-        return self._run(self.client.query, sql, parameters=parameters, settings=self.read_settings)
+    def _read(self, sql: str, resource_id: str, parameters: dict | None = None):
+        settings = self.get_read_settings(resource_id)
+        return self._run(self.client.query, sql, parameters=parameters, settings=settings)
 
     def _run(self, call, *arguments, **keywords):
         """Unreachable is a 503, refused is a 400. Never a silent empty answer."""

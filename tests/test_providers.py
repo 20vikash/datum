@@ -9,6 +9,7 @@ from datum.api.internals.providers import (
     ProviderError,
     QueryRefused,
 )
+from datum.config.clickhouse import get_schema
 
 
 class FakeClient:
@@ -51,9 +52,12 @@ def build(client=None, **options) -> ClickHouseProvider:
     return provider
 
 
+RESOURCE = "acme"
+
+
 def test_a_provider_missing_a_method_cannot_be_built():
     class Half(MetricProvider):
-        def fetch(self, sql):
+        def fetch(self, sql, resource_id):
             return []
 
     with pytest.raises(TypeError, match="abstract"):
@@ -67,7 +71,7 @@ def test_building_a_provider_opens_no_connection():
 def test_rows_come_back_keyed_by_column():
     client = FakeClient(columns=["ts", "value"], rows=[[1, 2.5]])
 
-    result = build(client).fetch("SELECT ts, value FROM datum.samples")
+    result = build(client).fetch("SELECT ts, value FROM datum.samples", RESOURCE)
 
     assert result.columns == ["ts", "value"]
     assert result.rows == [{"ts": 1, "value": 2.5}]
@@ -76,30 +80,65 @@ def test_rows_come_back_keyed_by_column():
 
 def test_a_read_that_fills_the_cap_is_reported_as_truncated():
     client = FakeClient(columns=["value"], rows=[[1.0], [2.0]])
+    provider = build(client, max_rows=2)
 
-    assert build(client, max_rows=2).fetch("SELECT value FROM datum.samples").truncated is True
+    assert provider.fetch("SELECT value FROM datum.samples", RESOURCE).truncated is True
 
 
 def test_a_read_cannot_mutate_whatever_the_credential_could():
     client = FakeClient()
 
-    build(client).fetch("SELECT 1")
+    build(client).fetch("SELECT 1", RESOURCE)
 
     assert client.queries[0][2]["readonly"] == 1
+
+
+def test_a_read_is_scoped_to_its_resource_id_whatever_the_sql_says():
+    """The filter is on the table, so `SELECT * FROM samples` still cannot
+    read another tenant."""
+    client = FakeClient()
+
+    build(client).fetch("SELECT * FROM datum.samples", RESOURCE)
+
+    filters = client.queries[0][2]["additional_table_filters"]
+    assert filters == {"datum.samples": "resource_id = 'acme'"}
+
+
+def test_a_resource_id_cannot_break_out_of_its_literal():
+    client = FakeClient()
+
+    build(client).fetch("SELECT 1", "acme' OR 1=1 --")
+
+    filters = client.queries[0][2]["additional_table_filters"]
+    assert filters == {"datum.samples": "resource_id = 'acme\\' OR 1=1 --'"}
+
+
+def test_every_read_is_scoped_not_only_the_query_route():
+    client = FakeClient(columns=["metric"], rows=[["cpu"]])
+    provider = build(client)
+
+    provider.get_metrics(RESOURCE)
+    provider.get_labels("cpu", RESOURCE)
+    provider.get_label_values("cpu", "region", RESOURCE)
+
+    assert all(
+        "resource_id = 'acme'" in query[2]["additional_table_filters"].values()
+        for query in client.queries
+    )
 
 
 def test_an_unreachable_store_is_not_a_refusal():
     client = FakeClient(error=OperationalError("connection refused"))
 
     with pytest.raises(ProviderError, match="unreachable"):
-        build(client).fetch("SELECT 1")
+        build(client).fetch("SELECT 1", RESOURCE)
 
 
 def test_a_refused_query_is_the_callers_fault():
     client = FakeClient(error=DatabaseError("syntax error"))
 
     with pytest.raises(QueryRefused, match="refused"):
-        build(client).fetch("SELCT 1")
+        build(client).fetch("SELCT 1", RESOURCE)
 
 
 def test_a_batch_is_written_in_column_order():
@@ -126,19 +165,18 @@ def test_an_empty_batch_touches_the_store_not_at_all():
     assert client.inserts == []
 
 
-def test_the_schema_is_created_as_configured():
-    statements = ("CREATE DATABASE IF NOT EXISTS datum", "CREATE TABLE t")
+def test_the_schema_is_created_where_it_is_configured():
     client = FakeClient()
 
-    build(client, statements=statements).ensure_schema()
+    build(client, database="other", table="readings").ensure_schema()
 
-    assert client.commands == list(statements)
+    assert client.commands == list(get_schema("other", "readings"))
 
 
 def test_label_lookups_are_parameterised_not_interpolated():
     client = FakeClient(columns=["label"], rows=[["region"]])
 
-    assert build(client).get_labels("cpu") == ["region"]
+    assert build(client).get_labels("cpu", RESOURCE) == ["region"]
     sql, parameters, _ = client.queries[0]
     assert parameters == {"metric": "cpu"}
     assert "cpu" not in sql
