@@ -25,7 +25,7 @@ def build(namespace: str, subsystem: str, target: str, unit: str = "", suffix: s
 
 
 def validate(name: str) -> str:
-    """Reject anything VictoriaMetrics would take but nobody could query sanely."""
+    """Reject anything that would store but nobody could query sanely."""
     if not NAME.match(name):
         raise BadName(f"{name!r} must be lowercase, and '.' or '-' must become '_'")
     if len(name) > 200:

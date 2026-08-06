@@ -1,0 +1,25 @@
+from __future__ import annotations
+
+from fastapi import APIRouter
+
+from datum.api.dependencies import Provider, Reader
+from datum.api.internals.schemas import ColumnList, MetricList, QueryRequest, QueryResponse
+
+router = APIRouter(tags=["query"])
+
+
+@router.post("/query")
+def query(body: QueryRequest, provider: Provider, reader: Reader) -> QueryResponse:
+    """Run one read against ClickHouse and hand back what it answered."""
+    result = provider.fetch(body.sql, resource_id=reader.resource_id)
+    return QueryResponse(columns=result.columns, rows=result.rows, truncated=result.truncated)
+
+
+@router.get("/metrics")
+def metrics(provider: Provider, reader: Reader) -> MetricList:
+    return MetricList(metrics=provider.get_metrics(reader.resource_id))
+
+
+@router.get("/metrics/{metric}/columns")
+def columns(metric: str, provider: Provider, reader: Reader) -> ColumnList:
+    return ColumnList(metric=metric, columns=provider.get_columns(metric, reader.resource_id))

@@ -1,4 +1,9 @@
-from datum.api.internals.providers.base import MetricProvider, ProviderError
-from datum.api.internals.providers.victoria_metrics import VictoriaMetricsProvider
+from datum.api.internals.providers.base import (
+    MetricProvider,
+    ProviderError,
+    QueryRefused,
+    Rows,
+)
+from datum.api.internals.providers.clickhouse import ClickHouseProvider
 
-__all__ = ["MetricProvider", "ProviderError", "VictoriaMetricsProvider"]
+__all__ = ["ClickHouseProvider", "MetricProvider", "ProviderError", "QueryRefused", "Rows"]
