@@ -95,26 +95,6 @@ def test_a_read_cannot_mutate_whatever_the_credential_could():
     assert client.queries[0][2]["readonly"] == 1
 
 
-def test_a_read_is_scoped_to_its_resource_id_whatever_the_sql_says():
-    """The filter is on the table, so `SELECT * FROM samples` still cannot
-    read another tenant."""
-    client = FakeClient()
-
-    build(client).fetch("SELECT * FROM datum.samples", RESOURCE)
-
-    filters = client.queries[0][2]["additional_table_filters"]
-    assert filters == {"datum.samples": "resource_id = 'acme'"}
-
-
-def test_a_resource_id_cannot_break_out_of_its_literal():
-    client = FakeClient()
-
-    build(client).fetch("SELECT 1", "acme' OR 1=1 --")
-
-    filters = client.queries[0][2]["additional_table_filters"]
-    assert filters == {"datum.samples": "resource_id = 'acme\\' OR 1=1 --'"}
-
-
 def test_every_read_is_scoped_not_only_the_query_route():
     client = FakeClient(columns=["metric"], rows=[["cpu"]])
     provider = build(client)
@@ -123,10 +103,7 @@ def test_every_read_is_scoped_not_only_the_query_route():
     provider.get_labels("cpu", RESOURCE)
     provider.get_label_values("cpu", "region", RESOURCE)
 
-    assert all(
-        "resource_id = 'acme'" in query[2]["additional_table_filters"].values()
-        for query in client.queries
-    )
+    assert all(query[2][RESOURCE_SETTING] == RESOURCE for query in client.queries)
 
 
 def test_an_unreachable_store_is_not_a_refusal():
@@ -187,15 +164,22 @@ def test_the_policy_is_created_with_the_table_not_after_it():
     assert f"getSetting('{RESOURCE_SETTING}')" in policy[0]
 
 
-def test_a_read_carries_both_filters():
-    """Policy binds to the table; the filter covers a missing policy."""
+def test_a_read_carries_the_tenant_setting_the_policy_reads():
     client = FakeClient()
 
     build(client).fetch("SELECT 1", RESOURCE)
 
-    settings = client.queries[0][2]
-    assert settings[RESOURCE_SETTING] == RESOURCE
-    assert settings["additional_table_filters"] == {"datum.samples": "resource_id = 'acme'"}
+    assert client.queries[0][2][RESOURCE_SETTING] == RESOURCE
+
+
+def test_a_read_names_no_column_the_projection_might_drop():
+    """`additional_table_filters` referenced resource_id, and on 26.7 it is
+    applied after projection: any query not selecting it failed."""
+    client = FakeClient()
+
+    build(client).fetch("SELECT metric FROM datum.samples", RESOURCE)
+
+    assert "additional_table_filters" not in client.queries[0][2]
 
 
 # What ClickHouse 26.8 prints, not a paraphrase.

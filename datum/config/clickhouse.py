@@ -1,28 +1,15 @@
-"""The one table Datum stores."""
-
 from __future__ import annotations
-
-import re
 
 TABLE = "samples"
 DATABASE = "datum"
 
-# Interpolated into SQL, and the key the tenant filter attaches under. A name
-# needing quotes would not match, and reads would go unscoped without erroring.
-IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
-
-
-def check_identifier(name: str, what: str) -> str:
-    if not IDENTIFIER.match(name):
-        raise ValueError(f"{what} must match {IDENTIFIER.pattern}, not {name!r}")
-    return name
-
-
 RESOURCE_LABEL = "resource_id"
 COLUMNS = ("ts", "metric", RESOURCE_LABEL, "labels", "value")
 
-# resource_id is lifted out of labels because it is the tenant boundary, so it
-# has to be a sort key rather than a map lookup. No TTL: nothing here expires.
+POLICY = "tenant"
+RESOURCE_SETTING = "SQL_datum_resource_id"
+
+
 SCHEMA = """\
 CREATE TABLE IF NOT EXISTS {database}.{table}
 (
@@ -40,10 +27,6 @@ POLICY_SCHEMA = """\
 CREATE ROW POLICY OR REPLACE {policy} ON {database}.{table}
 USING {label} = getSetting('{setting}')
 TO {username}"""
-
-
-POLICY = "tenant"
-RESOURCE_SETTING = "SQL_datum_resource_id"
 
 
 def get_schema(database: str = DATABASE, table: str = TABLE, username: str = "default"):
