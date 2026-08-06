@@ -8,7 +8,12 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from datum.api.internals import ProviderError, QueryRefused
-from datum.api.internals.remote import BodyTooLarge, RemoteWriteError, TooManySamples
+from datum.api.internals.remote import (
+    BodyTooLarge,
+    RemoteWriteError,
+    TooManySamples,
+    TooManySeries,
+)
 
 UNPROCESSABLE = 422
 
@@ -19,6 +24,7 @@ STATUS = {
     QueryRefused: 400,
     TooManySamples: 413,
     BodyTooLarge: 413,
+    TooManySeries: 413,
     RemoteWriteError: 400,
     NotImplementedError: 501,
     ProviderError: 503,

@@ -6,7 +6,7 @@ MAX_BODY = 8 * 1024 * 1024
 
 # Bytes after snappy, remote write only. Measured at roughly 20:1 on protobuf,
 # so MAX_BODY alone does not bound what a body costs once it is open.
-MAX_DECOMPRESSED = 16 * 1024 * 1024
+MAX_DECOMPRESSED = 12 * 1024 * 1024
 
 # Readings in one write, both paths. Reached after the body is parsed, so this
 # limits what ClickHouse is asked to swallow, not what datum holds in memory.

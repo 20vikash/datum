@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import cramjam
+from google.protobuf.internal.decoder import _DecodeVarint
 from google.protobuf.message import DecodeError
 
 from datum.api.internals.remote.remote_write_pb2 import WriteRequest
@@ -18,7 +19,16 @@ NAME_LABEL = "__name__"
 CONTENT_TYPE = "application/x-protobuf"
 V2 = "io.prometheus.write.v2.request"
 
-UNREADABLE = (DecodeError, cramjam.DecompressionError, ValueError, OSError)
+UNREADABLE = (DecodeError, cramjam.DecompressionError, ValueError, OSError, IndexError)
+
+# `timeseries` in WriteRequest, and its wire type. Every series holds at least
+# one reading, so a body carrying more series than MAX_BATCH is unsendable
+# whatever its samples say -- and counting them costs no objects.
+SERIES_FIELD = 1
+VARINT = 0
+FIXED_64 = 1
+LENGTH_DELIMITED = 2
+FIXED_32 = 5
 
 
 class RemoteWriteError(ValueError):
@@ -31,6 +41,10 @@ class TooManySamples(RemoteWriteError):
 
 class BodyTooLarge(RemoteWriteError):
     """Decompresses past what a batch could hold. Also a 413."""
+
+
+class TooManySeries(RemoteWriteError):
+    """More series than readings could fill. Also a 413."""
 
 
 def is_version_two(content_type: str) -> bool:
@@ -91,6 +105,7 @@ def _parse(body: bytes) -> WriteRequest:
     """Decompressed outside the `try`: an oversized body is a 413, and catching
     it here would report it as an unreadable one."""
     payload = _decompressed(body)
+    _check_series(payload)
     request = WriteRequest()
     try:
         request.ParseFromString(payload)
@@ -112,6 +127,48 @@ def _decompressed(body: bytes) -> bytes:
     except UNREADABLE as unreadable:
         raise RemoteWriteError(f"body is not snappy: {unreadable}") from unreadable
     return bytes(memoryview(buffer)[:written])
+
+
+def _check_series(payload: bytes) -> None:
+    """Raised outside the scan: an oversized body is a 413, and the scan's own
+    handler would report it as an unreadable one."""
+    if _count_series(payload) > MAX_BATCH:
+        raise TooManySeries(f"more than {MAX_BATCH} series, and each holds at least one reading")
+
+
+def _count_series(payload: bytes) -> int:
+    """The series in one body, counted before any are built.
+
+    `MAX_BATCH` counts readings, and a series carrying none costs 17 bytes to
+    send but a whole object to parse. Walking the top-level tags allocates
+    nothing and stops early, so refusing costs the scan rather than the parse.
+    """
+    position = 0
+    series = 0
+    try:
+        while position < len(payload):
+            tag, position = _DecodeVarint(payload, position)
+            series += (tag >> 3) == SERIES_FIELD
+            if series > MAX_BATCH:
+                return series
+            position = _skip(payload, position, tag & 7)
+    except UNREADABLE as unreadable:
+        raise RemoteWriteError(f"body is not a v1 WriteRequest: {unreadable}") from unreadable
+    return series
+
+
+def _skip(payload: bytes, position: int, wire_type: int) -> int:
+    """Past one field's value, without decoding it."""
+    if wire_type == LENGTH_DELIMITED:
+        length, position = _DecodeVarint(payload, position)
+        return position + length
+    if wire_type == VARINT:
+        return _DecodeVarint(payload, position)[1]
+    if wire_type == FIXED_64:
+        return position + 8
+    if wire_type == FIXED_32:
+        return position + 4
+    raise RemoteWriteError(f"unknown protobuf wire type {wire_type}")
 
 
 def _declared_length(body: bytes) -> int:

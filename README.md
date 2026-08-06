@@ -162,8 +162,9 @@ leaked read token cannot even enumerate another machine's metric names.
 Measured against ClickHouse 26.8, as `acme`, with rows for two tenants present:
 `SELECT *`, an alias, a subquery, a CTE, a union, a self-join, `IN (subquery)`,
 `merge('datum', '^samples$')` and `count()` all returned `acme` and nothing else;
-`remote()`, `url()`, `file()`, `system.query_log`, and both attempts to override
-the settings in SQL were refused outright.
+`remote()`, `url()`, `file()`, `system.processes`, `system.clusters`,
+`system.users`, and both attempts to override the settings in SQL were refused
+outright.
 
 ### Setting the ClickHouse side up
 
@@ -235,7 +236,7 @@ Signatures must be RSA or ECDSA. HMAC is never accepted.
 | 401 | JWT missing, unsigned, expired, signed by the wrong key, or naming no `resource_id` |
 | 403 | the token may not do that: no `read`, or no `write` |
 | 411 | no `Content-Length`, so the body cap could not be applied |
-| 413 | body over 8 MB, decompressing past 16 MB, or more than 10,000 samples |
+| 413 | body over 8 MB, decompressing past 12 MB, or more than 10,000 samples or series |
 | 415 | remote write v2, which is not read here |
 | 422 | the request body broke the schema |
 | 503 | datum is up, ClickHouse is not |

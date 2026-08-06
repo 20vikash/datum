@@ -1,9 +1,10 @@
 import cramjam
 import pytest
 
-from datum.api.internals.remote import BodyTooLarge, decode
+from datum.api.internals.remote import BodyTooLarge, TooManySeries, decode
+from datum.api.internals.remote.remote_write_pb2 import WriteRequest
 from datum.api.middleware import BodyLimit
-from datum.config import MAX_BODY, MAX_DECOMPRESSED, Settings
+from datum.config import MAX_BATCH, MAX_BODY, MAX_DECOMPRESSED, Settings
 
 RESOURCE = "acme"
 
@@ -61,6 +62,49 @@ def test_the_bomb_is_never_allocated_to_answer_it(client, provider):
 
     assert client.post("/v1/ingest/remote", content=bomb).status_code == 413
     assert provider.written == []
+
+
+def series(count, samples=0):
+    """A body of `count` series, each carrying a usable name."""
+    request = WriteRequest()
+    for _ in range(count):
+        stream = request.timeseries.add()
+        stream.labels.add(name="__name__", value="cpu")
+        for index in range(samples):
+            stream.samples.add(value=1.0, timestamp=1785836545000 + index)
+    return bytes(cramjam.snappy.compress_raw(request.SerializeToString()))
+
+
+def test_series_carrying_no_readings_are_refused_before_they_are_built():
+    """MAX_BATCH counts readings, so empty series slip past it: they cost 17
+    bytes to send and a whole object to parse."""
+    with pytest.raises(TooManySeries, match=str(MAX_BATCH)):
+        decode(series(MAX_BATCH + 1), RESOURCE)
+
+
+def test_the_series_cap_is_reached_without_parsing_the_body():
+    """The scan stops early, so the refusal costs the scan and not the parse."""
+    body = series(MAX_BATCH * 20)
+
+    assert len(body) < MAX_BODY
+    with pytest.raises(TooManySeries):
+        decode(body, RESOURCE)
+
+
+def test_a_body_of_exactly_the_cap_is_still_accepted():
+    assert len(decode(series(MAX_BATCH, samples=1), RESOURCE)) == MAX_BATCH
+
+
+def test_an_empty_series_body_is_a_413(client, provider):
+    assert client.post("/v1/ingest/remote", content=series(MAX_BATCH + 1)).status_code == 413
+    assert provider.written == []
+
+
+def test_the_scan_refuses_rubbish_as_a_400_not_a_500(client):
+    """A payload that decompresses but is not protobuf reaches the scan first."""
+    body = bytes(cramjam.snappy.compress_raw(b"\xff" * 64))
+
+    assert client.post("/v1/ingest/remote", content=body).status_code == 400
 
 
 def test_a_table_name_that_would_need_quoting_is_refused_at_startup():
