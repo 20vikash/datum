@@ -2,12 +2,14 @@ import time
 
 import pytest
 
-from datum.api.limiter import RateLimiter
-from datum.api.routes.v1.ingest import WRITES
-from datum.api.routes.v1.query import LISTINGS, READS
+from datum.api.limiter import RateLimiter, RateLimitKey
 
+INGEST = "/v1/ingest"
+SAMPLE = {"samples": [{"metric": "cpu", "value": 1.0, "ts": "2026-08-05T10:00:00Z"}]}
 PATH = "/v1/query"
-BODY = {"sql": "SELECT 1"}
+
+# What ingest.py asks for.
+WRITES = 12
 
 
 LIMIT = 3
@@ -73,45 +75,58 @@ def test_the_window_reopens_once_the_period_passes():
     assert limiter.get_retry_after("acme", PATH, 1, 0.01) == 0
 
 
-def test_one_budget_covers_every_url_a_route_answers(client, provider):
-    """Keyed on the route template: without that, each metric name would get a
-    budget of its own and the route would be unlimited."""
-    for index in range(LISTINGS):
-        assert client.get(f"/v1/metrics/metric_{index}/columns").status_code == 200
-
-    assert client.get("/v1/metrics/another_one/columns").status_code == 429
-
-
-def test_each_route_carries_its_own_budget(client, provider):
-    """`/v1/query` is charged more dearly than an ingest, so spending one does
-    not spend the other."""
-    for _ in range(READS + 1):
-        client.post(PATH, json=BODY)
-
-    sample = {"metric": "cpu", "value": 1.0, "ts": "2026-08-05T10:00:00Z"}
-    assert client.post("/v1/ingest", json={"samples": [sample]}).status_code == 200
-    assert WRITES > READS
-
-
 def test_a_route_refuses_once_the_budget_is_spent(client, provider):
-    for _ in range(READS):
-        assert client.post(PATH, json=BODY).status_code == 200
+    for _ in range(WRITES):
+        assert client.post(INGEST, json=SAMPLE).status_code == 200
 
-    response = client.post(PATH, json=BODY)
+    response = client.post(INGEST, json=SAMPLE)
 
     assert response.status_code == 429
     assert int(response.headers["retry-after"]) > 0
 
 
 def test_the_limit_is_per_tenant_through_the_api(client, other_tenant):
-    for _ in range(READS + 1):
-        client.post(PATH, json=BODY)
+    for _ in range(WRITES + 1):
+        client.post(INGEST, json=SAMPLE)
 
-    assert other_tenant.post(PATH, json=BODY).status_code == 200
+    assert other_tenant.post(INGEST, json=SAMPLE).status_code == 200
+
+
+def test_the_two_ingest_routes_are_counted_apart(client):
+    """Same budget, separate windows: JSON and remote write are two routes."""
+    for _ in range(WRITES + 1):
+        client.post(INGEST, json=SAMPLE)
+
+    assert client.post("/v1/ingest/remote", content=b"nonsense").status_code != 429
 
 
 def test_an_unknown_token_is_a_401_not_a_429(anonymous):
-    for _ in range(READS + 5):
-        response = anonymous.post(PATH, json=BODY)
+    for _ in range(WRITES + 5):
+        response = anonymous.post(INGEST, json=SAMPLE)
 
     assert response.status_code == 401
+
+
+def test_callers_who_stop_coming_back_are_retired():
+    """They sink to the front as others are served, and are dropped there."""
+    limiter = RateLimiter()
+    for index in range(20):
+        limiter.get_retry_after(f"gone-{index}", PATH, LIMIT, 0.01)
+    time.sleep(0.02)
+
+    for index in range(20):
+        limiter.get_retry_after(f"here-{index}", PATH, LIMIT, 60)
+
+    held = [key.caller for key in limiter.ratelimit_windows]
+    assert not any(caller.startswith("gone") for caller in held)
+
+
+def test_a_live_caller_is_never_retired_to_make_room():
+    """No cap, so nobody is refused or reset for holding a window."""
+    limiter = RateLimiter()
+    limiter.get_retry_after("early", PATH, LIMIT, 60)
+
+    for index in range(500):
+        assert limiter.get_retry_after(f"later-{index}", PATH, LIMIT, 60) == 0
+
+    assert RateLimitKey("early", PATH) in limiter.ratelimit_windows
