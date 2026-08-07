@@ -29,3 +29,6 @@ victoriametrics-data/
 # editors
 .idea/
 .vscode/
+
+# local notes, never published
+todos/
