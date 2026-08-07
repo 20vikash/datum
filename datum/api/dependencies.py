@@ -6,6 +6,7 @@ from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from datum.api.internals import Identity, MetricProvider
+from datum.config.limits import MAX_REQUESTS, RATE_PERIOD
 
 bearer = HTTPBearer(auto_error=False, description="JWT minted by Central.")
 
@@ -31,6 +32,24 @@ def get_identity(
 
 
 Caller = Annotated[Identity, Depends(get_identity)]
+
+
+def rate_limit(limit: int = MAX_REQUESTS, period: float = RATE_PERIOD):
+    """Allow route based rate limiting via the token, by returning a Depends called at runtime."""
+
+    def spend(request: Request, identity: Caller) -> None:
+        route = request.scope["route"].path
+        retry_after = request.app.state.limiter.get_retry_after(
+            identity.resource_id, route, limit, period
+        )
+        if retry_after:
+            raise HTTPException(
+                status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Too many requests.",
+                headers={"Retry-After": str(retry_after)},
+            )
+
+    return Depends(spend)
 
 
 def get_reader(identity: Caller) -> Identity:

@@ -4,7 +4,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Body, Header, HTTPException, Response, status
 
-from datum.api.dependencies import Provider, Writer
+from datum.api.dependencies import Provider, Writer, rate_limit
 from datum.api.internals.remote import CONTENT_TYPE, decode, is_version_two
 from datum.api.internals.schemas import IngestResponse, Sample, SamplesRequest
 
@@ -12,7 +12,12 @@ router = APIRouter(tags=["ingest"])
 
 
 @router.post("/ingest")
-def ingest(body: SamplesRequest, provider: Provider, resource_id: Writer) -> IngestResponse:
+def ingest(
+    body: SamplesRequest,
+    provider: Provider,
+    resource_id: Writer,
+    _: Annotated[None, rate_limit(12, 60)],  # 1 request every 5 seconds
+) -> IngestResponse:
     """Stamp every row with the token's resource_id, then write the batch."""
     return IngestResponse(accepted=provider.ingest(get_rows(body.samples, resource_id)))
 
@@ -22,6 +27,7 @@ def remote(
     body: Annotated[bytes, Body(media_type=CONTENT_TYPE)],
     provider: Provider,
     resource_id: Writer,
+    _: Annotated[None, rate_limit(12, 60)],  # 1 request every 5 seconds
     content_type: str = Header(default=CONTENT_TYPE),
 ) -> Response:
     """Prometheus remote write. Same rules, a different wrapper.

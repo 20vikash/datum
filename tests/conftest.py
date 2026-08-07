@@ -128,6 +128,15 @@ def client(tokens, provider):
 
 
 @pytest.fixture
+def other_tenant(tokens, provider):
+    """A second tenant against the same app, so budgets can be told apart."""
+    app = create_app(SETTINGS, tokens=tokens, provider=provider)
+    token = mint({"resource_id": "other", "access": ["read", "write"]})
+    with TestClient(app, headers={"Authorization": f"Bearer {token}"}) as test_client:
+        yield test_client
+
+
+@pytest.fixture
 def anonymous():
     app = create_app(SETTINGS, tokens=TokenVerifier(), provider=FakeProvider())
     with TestClient(app) as test_client:

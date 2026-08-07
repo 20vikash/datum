@@ -51,7 +51,8 @@ ClickHouse stores them, and consumers read them back with SQL.
     - `limits.py` — every cap on one request, in the order a request meets them
   - `api/app.py` — `create_app(settings, tokens, provider)`; builds the provider once, at
     startup, and creates the schema if it is missing
-  - `api/dependencies.py` — `Provider`, `Caller`, `Reader`, `Writer`; the gates on `/v1`
+  - `api/dependencies.py` — `Provider`, `Caller`, `Reader`, `Writer`, `rate_limit`; the gates on `/v1`
+  - `api/limiter.py` — `RateLimiter`; counts requests, holds no policy
   - `api/errors.py` — every failure a caller can cause, mapped to its status
   - `api/routes/v1/` — `query.py` and `ingest.py`, mounted in `v1/__init__.py`
   - `api/internals/schemas.py` — the published wire contract, and `Sample.get_row`
@@ -99,6 +100,14 @@ datum-beacon ───────────┘ evaluates rules
 - Auth attaches to the `/v1` mount, not to individual routes, so a new route is authenticated
   by default. It resolves before validation, so a stranger sending nonsense gets 401 and learns
   nothing about the schema.
+- **A route's rate limit is asked for by name too**, `rate_limit(WRITES)` in its signature, and
+  the number lives beside the routes it governs. `RateLimiter` counts; it holds no policy, so
+  two routes can charge the same caller differently. It keys on the route's *template*, not the
+  URL: on `request.url.path` every metric name gets a budget of its own and the route is
+  unlimited. It cannot be middleware: middleware runs
+  before the token resolves, so it could only key on address, and behind the proxy every tenant
+  shares one. A route that asks for no limit is unlimited — read the signature. The counts are
+  per worker and in memory, so with two workers the real limit is doubled.
 - What a token may *do* is asked for by name: a route takes `Reader` or `Writer` as an
   argument. Both are visible in the signature, so a route never gets its permissions from
   somewhere else in the file tree. A new route that asks for neither is authenticated but

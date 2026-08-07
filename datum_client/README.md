@@ -65,7 +65,7 @@ changes. That is what keeps names the same everywhere.
 Leave `target` empty when the prefix already says it all:
 
 ```python
-Batch("pilot", "process").up("", True, service="web")   # pilot_process_up
+Batch("pilot", "process").up("", True, service="web")  # pilot_process_up
 ```
 
 Every method returns the batch, so you can chain:
@@ -79,10 +79,10 @@ together. Still one POST.
 
 ```python
 memory = Batch("system", "memory")
-memory.gauge("used", used_bytes, "bytes")     # system_memory_used_bytes
+memory.gauge("used", used_bytes, "bytes")  # system_memory_used_bytes
 
 cpu = Batch("system", "cpu")
-cpu.gauge("usage", 12.5, "percent")           # system_cpu_usage_percent
+cpu.gauge("usage", 12.5, "percent")  # system_cpu_usage_percent
 
 datum.send(memory, cpu)
 ```
@@ -94,7 +94,7 @@ Batches stay separate on purpose. One can never write into another.
 The unit is glued onto the name. Same as `prometheus_client`.
 
 ```python
-memory.gauge("used", 1154545090, "bytes")   # system_memory_used_bytes
+memory.gauge("used", 1154545090, "bytes")  # system_memory_used_bytes
 ```
 
 **It is not checked.** Pass `"mb"` and you get `system_memory_used_mb`.
@@ -113,13 +113,13 @@ No unit is fine when a unit means nothing. A load average is not a quantity of
 anything:
 
 ```python
-batch.gauge("load_average", 0.42, window="1m")   # system_load_average
+batch.gauge("load_average", 0.42, window="1m")  # system_load_average
 ```
 
 The unit is not added twice if the target already ends with it:
 
 ```python
-batch.gauge("memory_rss", 1024, "bytes")        # pilot_process_memory_rss_bytes
+batch.gauge("memory_rss", 1024, "bytes")  # pilot_process_memory_rss_bytes
 batch.gauge("memory_rss_bytes", 1024, "bytes")  # pilot_process_memory_rss_bytes
 ```
 
@@ -151,7 +151,7 @@ batch.gauge("cpu", 1.2, "percent", pid="4412")
 # BadName: 'pid' changes constantly, so it would make a new series each time.
 #          Label by service instead, and put it on an _info metric.
 
-batch.info("", service="web", pid="4412")    # allowed here only
+batch.info("", service="web", pid="4412")  # allowed here only
 # pilot_process_info{service="web",pid="4412"} 1
 ```
 
@@ -223,7 +223,7 @@ Stored in milliseconds. Anything finer is lost.
 
 ```python
 status = datum.send(batch)
-status = datum.send(system, memory, cpu)   # still one POST
+status = datum.send(system, memory, cpu)  # still one POST
 ```
 
 Fire and forget. One POST, 2 second timeout, no retry, no queue on disk.
