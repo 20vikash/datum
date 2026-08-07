@@ -5,6 +5,7 @@ import re
 NAME = re.compile(r"^[a-z_][a-z0-9_]*$")
 LABEL = re.compile(r"^[a-z_][a-z0-9_]*$")
 
+
 class BadName(ValueError):
     """A metric or label name that would be wrong to store."""
 
@@ -51,5 +52,3 @@ def validate_labels(labels: dict[str, str], churning_allowed: bool = False) -> d
         if not LABEL.match(key):
             raise BadName(f"label {key!r} must be lowercase with underscores")
     return {key: str(value) for key, value in labels.items()}
-
-

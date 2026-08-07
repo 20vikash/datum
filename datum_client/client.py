@@ -38,7 +38,9 @@ class Batch:
 
     def up(self, target: str, is_up: bool, ts=None, **labels) -> Batch:
         """The `up` convention: absence is invisible, 0 is alertable."""
-        return self._add(build(self.namespace, self.subsystem, target, "", "up"), int(is_up), ts, labels)
+        return self._add(
+            build(self.namespace, self.subsystem, target, "", "up"), int(is_up), ts, labels
+        )
 
     def info(self, target: str, ts=None, **labels) -> Batch:
         """Always 1, carrying facts as labels. The one place a pid belongs."""

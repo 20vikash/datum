@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from math import ceil
 from threading import Lock
@@ -35,6 +36,7 @@ class RateLimiter:
         default_factory=OrderedDict
     )
     lock: Lock = field(default_factory=Lock)
+    clock: Callable[[], float] = monotonic
 
     def get_retry_after(self, caller: str, route: str, limit: int, period: float) -> int:
         """Seconds to wait, or 0 when the request may go ahead and has been counted.
@@ -42,7 +44,7 @@ class RateLimiter:
         A refused request is not counted. Counting it would push the window out,
         and a caller at the limit would never get back in.
         """
-        now = monotonic()
+        now = self.clock()
         with self.lock:
             key = RateLimitKey(caller, route)
             window = self.ratelimit_windows.get(key)

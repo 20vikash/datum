@@ -1,5 +1,3 @@
-import time
-
 import pytest
 
 from datum.api.limiter import RateLimiter, RateLimitKey
@@ -16,9 +14,27 @@ LIMIT = 3
 PERIOD = 60
 
 
+class Clock:
+    """Time a test moves by hand, so no test waits on the wall clock."""
+
+    def __init__(self):
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
 @pytest.fixture
-def limiter():
-    return RateLimiter()
+def clock():
+    return Clock()
+
+
+@pytest.fixture
+def limiter(clock):
+    return RateLimiter(clock=clock)
 
 
 def test_requests_under_the_limit_are_let_through(limiter):
@@ -65,14 +81,13 @@ def test_routes_are_counted_apart(limiter):
     assert limiter.get_retry_after("acme", "/v1/ingest", LIMIT, PERIOD) == 0
 
 
-def test_the_window_reopens_once_the_period_passes():
-    limiter = RateLimiter()
-    limiter.get_retry_after("acme", PATH, 1, 0.01)
-    assert limiter.get_retry_after("acme", PATH, 1, 0.01) > 0
+def test_the_window_reopens_once_the_period_passes(limiter, clock):
+    limiter.get_retry_after("acme", PATH, 1, PERIOD)
+    assert limiter.get_retry_after("acme", PATH, 1, PERIOD) > 0
 
-    time.sleep(0.02)
+    clock.advance(PERIOD)
 
-    assert limiter.get_retry_after("acme", PATH, 1, 0.01) == 0
+    assert limiter.get_retry_after("acme", PATH, 1, PERIOD) == 0
 
 
 def test_a_route_refuses_once_the_budget_is_spent(client, provider):
@@ -107,12 +122,11 @@ def test_an_unknown_token_is_a_401_not_a_429(anonymous):
     assert response.status_code == 401
 
 
-def test_callers_who_stop_coming_back_are_retired():
+def test_callers_who_stop_coming_back_are_retired(limiter, clock):
     """They sink to the front as others are served, and are dropped there."""
-    limiter = RateLimiter()
     for index in range(20):
-        limiter.get_retry_after(f"gone-{index}", PATH, LIMIT, 0.01)
-    time.sleep(0.02)
+        limiter.get_retry_after(f"gone-{index}", PATH, LIMIT, 10)
+    clock.advance(11)
 
     for index in range(20):
         limiter.get_retry_after(f"here-{index}", PATH, LIMIT, 60)
@@ -121,9 +135,8 @@ def test_callers_who_stop_coming_back_are_retired():
     assert not any(caller.startswith("gone") for caller in held)
 
 
-def test_a_live_caller_is_never_retired_to_make_room():
+def test_a_live_caller_is_never_retired_to_make_room(limiter):
     """No cap, so nobody is refused or reset for holding a window."""
-    limiter = RateLimiter()
     limiter.get_retry_after("early", PATH, LIMIT, 60)
 
     for index in range(500):
