@@ -9,7 +9,7 @@ from datum.api.internals.remote import (
     decode,
 )
 from datum.api.internals.remote.remote_write_pb2 import WriteRequest
-from datum.config import MAX_BATCH, MAX_DECOMPRESSED, MAX_LABELS, MAX_SQL, Settings
+from datum.config import MAX_BATCH, MAX_DECOMPRESSED, MAX_LABELS, Settings
 
 RESOURCE = "acme"
 
@@ -104,7 +104,7 @@ def test_a_wide_series_is_a_413(client, provider):
 
 
 def test_a_table_name_that_would_need_quoting_is_refused_at_startup():
-    """It would not match the table, so the tenant filter attaches to nothing."""
+    """An unquotable name cannot be interpolated into the schema DDL."""
     with pytest.raises(ValueError, match="DATUM_CLICKHOUSE_TABLE"):
         Settings(host="localhost", table="samples; DROP")
 
@@ -112,11 +112,3 @@ def test_a_table_name_that_would_need_quoting_is_refused_at_startup():
 def test_a_database_name_is_held_to_the_same_rule():
     with pytest.raises(ValueError, match="DATUM_CLICKHOUSE_DATABASE"):
         Settings(host="localhost", database="datum-1")
-
-
-def test_a_query_longer_than_the_cap_is_refused(client):
-    assert client.post("/v1/query", json={"sql": "x" * (MAX_SQL + 1)}).status_code == 422
-
-
-def test_an_empty_query_is_refused(client):
-    assert client.post("/v1/query", json={"sql": ""}).status_code == 422

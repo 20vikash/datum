@@ -4,7 +4,7 @@ from fastapi.testclient import TestClient
 
 from datum import Settings, create_app
 from datum.api.internals import Identity, TokenVerifier
-from datum.api.internals.providers import MetricProvider, Rows
+from datum.api.internals.providers import MetricProvider
 
 SETTINGS = Settings(host="localhost")
 
@@ -84,29 +84,15 @@ class FakeProvider(MetricProvider):
 
     def __init__(self, **options):
         self.options = options
-        self.fetched: list[str] = []
         self.written: list[dict] = []
         self.prepared = False
 
     def ensure_schema(self):
         self.prepared = True
 
-    def fetch(self, sql, resource_id):
-        self.fetched.append((sql, resource_id))
-        return Rows(columns=["ts", "value"])
-
     def ingest(self, rows):
         self.written.extend(rows)
         return len(rows)
-
-    def get_metrics(self, resource_id):
-        return ["system_cpu_percent"]
-
-    def get_labels(self, metric, resource_id):
-        return ["region"]
-
-    def get_label_values(self, metric, label, resource_id):
-        return ["ap_south_1"]
 
 
 @pytest.fixture

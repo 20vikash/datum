@@ -14,16 +14,11 @@ MAX_BATCH = 10_000
 # a handful: node_exporter's widest is well under twenty.
 MAX_LABELS = 64
 
-# Characters in one read. Reached after the body is parsed, so it bounds what
-# ClickHouse is asked to compile, not what datum holds.
-MAX_SQL = 64 * 1024
-
 # Requests one tenant may make to one path per period, counted in memory by a
 # single worker.
 MAX_REQUESTS = 300
 RATE_PERIOD = 60.0
 
-# Rows in one read, and seconds to connect or execute. Applied by ClickHouse
-# rather than here, and both are overridable per deployment.
-MAX_ROWS = 100_000
+# Seconds to connect or execute. Applied by ClickHouse rather than here, and
+# overridable per deployment.
 TIMEOUT = 30.0

@@ -14,7 +14,6 @@ TITLE = "datum"
 VERSION = "0.1.0"
 
 TAGS = [
-    {"name": "query", "description": "Read numbers back with SQL, straight through to ClickHouse."},
     {"name": "ingest", "description": "Write samples. The token decides who they belong to."},
 ]
 
@@ -27,7 +26,6 @@ def get_provider(settings: Settings) -> MetricProvider:
         password=settings.password,
         database=settings.database,
         table=settings.table,
-        max_rows=settings.max_rows,
         timeout=settings.timeout,
     )
 
