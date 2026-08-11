@@ -52,12 +52,6 @@ def rate_limit(limit: int = MAX_REQUESTS, period: float = RATE_PERIOD):
     return Depends(spend)
 
 
-def get_reader(identity: Caller) -> Identity:
-    if not identity.can_read:
-        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Token cannot read.")
-    return identity
-
-
 def get_writer(identity: Caller) -> str:
     """The resource id stamped on every written row."""
     if not identity.can_write:
@@ -66,5 +60,4 @@ def get_writer(identity: Caller) -> str:
 
 
 Provider = Annotated[MetricProvider, Depends(get_provider)]
-Reader = Annotated[Identity, Depends(get_reader)]
 Writer = Annotated[str, Depends(get_writer)]

@@ -4,7 +4,7 @@ from datum.api.limiter import RateLimiter, RateLimitKey
 
 INGEST = "/v1/ingest"
 SAMPLE = {"samples": [{"metric": "cpu", "value": 1.0, "ts": "2026-08-05T10:00:00Z"}]}
-PATH = "/v1/query"
+PATH = "/v1/ingest/remote"
 
 # What ingest.py asks for.
 WRITES = 12

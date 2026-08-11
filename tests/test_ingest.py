@@ -62,14 +62,6 @@ def test_a_token_without_a_resource_id_is_not_an_identity(tokens):
     assert response.status_code == 401
 
 
-def test_a_writer_cannot_read(tokens):
-    with as_client(tokens, {"resource_id": "acme", "access": ["write"]}) as client:
-        response = client.post("/v1/query", json={"sql": "SELECT 1"})
-
-    assert response.status_code == 403
-    assert "read" in response.json()["detail"]
-
-
 def test_ingest_is_behind_the_same_gate(anonymous):
     assert post(anonymous, SAMPLE).status_code == 401
 

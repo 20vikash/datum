@@ -12,7 +12,6 @@ import jwt
 from datum.config.clickhouse import RESOURCE_LABEL
 
 ACCESS_CLAIM = "access"
-READ = "read"
 WRITE = "write"
 ALGORITHMS = ["RS256", "RS384", "RS512", "ES256", "ES384", "ES512"]
 
@@ -26,18 +25,15 @@ DISCOVERY_TIMEOUT = 5.0
 
 @dataclass(frozen=True)
 class Identity:
-    """What a token says: who it speaks for, and whether it may read, write or both.
+    """What a token says: who it speaks for, and whether it may write.
 
     Central signs bench and site logins with the same key, so a token that
-    claims neither gets nothing here.
+    claims no access gets nothing here. `access` keeps every claim it carries,
+    including `read`, which datum no longer serves and does not reject.
     """
 
     resource_id: str
     access: frozenset[str] = frozenset()
-
-    @property
-    def can_read(self) -> bool:
-        return READ in self.access
 
     @property
     def can_write(self) -> bool:
@@ -45,8 +41,8 @@ class Identity:
 
     @classmethod
     def from_claims(cls, claims: dict) -> Identity:
-        """No resource_id, no identity: reads are scoped by it and writes are
-        stamped with it, so a token without one has nothing to address."""
+        """No resource_id, no identity: every row is stamped with it, so a token
+        without one has nothing to address."""
         resource_id = claims.get(RESOURCE_LABEL)
         if not resource_id:
             raise jwt.InvalidTokenError(f"Token carries no {RESOURCE_LABEL}.")

@@ -5,14 +5,14 @@ import re
 from dataclasses import dataclass
 
 from datum.config.clickhouse import DATABASE, TABLE
-from datum.config.limits import MAX_ROWS, TIMEOUT
+from datum.config.limits import TIMEOUT
 
 IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
 
 @dataclass(frozen=True)
 class Settings:
-    """How the API reaches ClickHouse. The user needs SELECT and INSERT, nothing more."""
+    """How the API reaches ClickHouse. The user needs INSERT, nothing more."""
 
     host: str
     port: int = 8123
@@ -20,7 +20,6 @@ class Settings:
     password: str = ""
     database: str = DATABASE
     table: str = TABLE
-    max_rows: int = MAX_ROWS
     timeout: float = TIMEOUT
 
     @classmethod
@@ -48,6 +47,5 @@ class Settings:
             password=os.environ.get("DATUM_CLICKHOUSE_PASSWORD", cls.password),
             database=os.environ.get("DATUM_CLICKHOUSE_DATABASE", cls.database),
             table=os.environ.get("DATUM_CLICKHOUSE_TABLE", cls.table),
-            max_rows=int(os.environ.get("DATUM_MAX_ROWS", cls.max_rows)),
             timeout=float(os.environ.get("DATUM_TIMEOUT", cls.timeout)),
         )

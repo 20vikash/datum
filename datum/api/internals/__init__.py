@@ -4,7 +4,6 @@ from datum.api.internals.providers import (
     MetricProvider,
     ProviderError,
     QueryRefused,
-    Rows,
 )
 
 __all__ = [
@@ -13,6 +12,5 @@ __all__ = [
     "MetricProvider",
     "ProviderError",
     "QueryRefused",
-    "Rows",
     "TokenVerifier",
 ]

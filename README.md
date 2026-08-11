@@ -1,21 +1,21 @@
 # datum
 
 Datum stores numbers about your fleet. Producers push them in. You read them
-back with SQL.
+back out of ClickHouse with SQL.
 
-ClickHouse stores everything. Datum is the door in front of it:
+ClickHouse stores everything. Datum is the write door in front of it:
 
 ```
 producers (JSON)          ──┐
 agents    (remote write)  ──┴──> datum ──> ClickHouse
                                              ▲
-readers   (SQL)           ──> datum ─────────┤
-Insights  (SQL)           ────────────────────┘  its own read-only account
+Insights  (SQL)           ───────────────────┘  its own read-only account
 ```
 
-Every call carries the same JWT. Insights does not go through datum at all — it
-connects to ClickHouse directly with a read-only user, which is the point of
-storing in something that already speaks SQL.
+Every write carries a JWT. **Datum serves no reads.** Readers connect to
+ClickHouse directly with their own credential, which is the point of storing in
+something that already speaks SQL. A SQL passthrough in front of it was a second
+door onto the same rows, with its own tenant boundary to keep correct.
 
 Nothing queues or buffers. If ClickHouse is down, a write fails and the producer
 moves on.
@@ -33,9 +33,6 @@ break a health check.
 |---|---|---|
 | `POST` | `/v1/ingest` | JSON samples in, `{"accepted": n}` out |
 | `POST` | `/v1/ingest/remote` | Prometheus remote write, `204` out |
-| `POST` | `/v1/query` | SQL in, rows out |
-| `GET` | `/v1/metrics` | every metric name stored |
-| `GET` | `/v1/metrics/{metric}/columns` | its columns, with labels flattened |
 | `GET` | `/health` | liveness |
 
 Browse them at `/docs`. Raw schema at `/v1/openapi.json`.
@@ -120,51 +117,32 @@ to drain.
 
 ## Reading data
 
+Not through datum. Point your reader at ClickHouse with its own credential:
+
 ```bash
-curl -X POST http://localhost:8000/v1/query \
-  -H "Authorization: Bearer $JWT" -H 'Content-Type: application/json' \
-  -d '{"sql": "SELECT ts, value FROM datum.samples WHERE metric = '"'"'cpu'"'"' ORDER BY ts DESC LIMIT 10"}'
+clickhouse-client --user insights --query \
+  "SELECT ts, value FROM datum.samples
+   WHERE resource_id = 'vm-abc123' AND metric = 'cpu' ORDER BY ts DESC LIMIT 10"
 ```
 
-The SQL is ClickHouse SQL and it is passed through as written. There is no
-translator, and datum refuses no query of its own. What constrains a read is
-applied by ClickHouse: `readonly=1`, so a query route cannot mutate even if the
-credential could, plus a row cap and an execution timeout. When the cap is hit
-the answer comes back with `"truncated": true` rather than silently short.
+datum used to carry a `/v1/query` passthrough, plus `/v1/metrics` and
+`/v1/metrics/{metric}/columns`. All three are gone. They were the only place a
+caller's SQL reached the store, and holding them safe meant a row policy, a
+`readonly=1` setting, a row cap and a startup grant audit — four mechanisms
+guarding a door that Insights never used.
 
-**A read only ever sees the token's own `resource_id`**, and two things enforce
-it. Together they are the tenant boundary; either one alone has a hole.
+**Tenant scoping on read is the reader's own credential**, granted at
+provisioning time. A reader that must not see the whole fleet gets a ClickHouse
+user with a row policy of its own:
 
-1. **A row policy on the table**, reading a per-request custom setting:
+```sql
+CREATE ROW POLICY tenant ON datum.samples USING resource_id = 'vm-abc123' TO some_reader;
+```
 
-   ```sql
-   CREATE ROW POLICY OR REPLACE tenant ON datum.samples
-   USING resource_id = getSetting('SQL_datum_resource_id')
-   TO datum;
-   ```
-
-   This binds to the *table*, so it holds however the rows are reached —
-   including `merge()`, which reads the same rows under a different name. datum
-   creates it in `ensure_schema` alongside the table, because a deployment with
-   the table but no policy reads across tenants.
-
-2. **Grants**, which decide what else the credential can see at all. Without them
-   `system.query_log` hands over other tenants' SQL and `url()` fetches from the
-   ClickHouse host.
-
-`additional_table_filters` was a third layer and was removed: on ClickHouse 26.7
-it is applied after projection, so every query that did not select `resource_id`
-failed with `NOT_FOUND_COLUMN_IN_BLOCK`. It also only ever bound to the name
-written in the query, which is the weakness the row policy exists to cover.
-
-`readonly=1` is what stops a caller resetting the setting from inside their own
-SQL. `/metrics` and `/metrics/{metric}/columns` are scoped the same way, so a
-leaked read token cannot even enumerate another machine's metric names.
-
-Measured in production on ClickHouse 26.7 as `pilot-staging`, with two tenants
-present: a direct read, a subquery, a union, `merge('datum', '^samples$')` and
-`count()` all returned that tenant and nothing else; `remote()`,
-`system.query_log`, and overriding the setting in SQL were all refused.
+datum does not create that policy, because datum does not know who reads. It
+creates the database and the table, nothing else. Reads are somebody else's
+credential and somebody else's boundary — which is what makes the write path
+here small enough to reason about.
 
 ### Capping request bodies
 
@@ -182,40 +160,27 @@ directly is likewise uncapped.
 
 ### Setting the ClickHouse side up
 
-The custom setting needs a server-side prefix, or **every read fails** — loudly,
-not silently, but it fails. In `config.d/datum.xml`:
-
-```xml
-<clickhouse>
-    <custom_settings_prefixes>SQL_</custom_settings_prefixes>
-</clickhouse>
-```
-
-Then the API's user, granted only what it uses:
+The API's user, granted only what it uses:
 
 ```sql
 CREATE USER datum IDENTIFIED BY '...';
 REVOKE ALL ON *.* FROM datum;
-GRANT SELECT, INSERT ON datum.samples TO datum;
+GRANT INSERT ON datum.samples TO datum;
 GRANT CREATE DATABASE, CREATE TABLE ON datum.* TO datum;
-GRANT CREATE ROW POLICY ON datum.* TO datum;
 ```
 
-The last two are what `ensure_schema` needs. The revoke is the important line:
-it is what removes `system.*` and the `remote`/`url`/`file`/`s3` table
-functions, and no filter substitutes for it.
+The last line is what `ensure_schema` needs. The revoke is the important one: it
+is what keeps a leaked API credential from reading anything at all, and datum no
+longer checks it — a credential's reach is granted at provisioning time, not
+audited at boot.
 
-**datum checks this at startup and refuses to run without it.** `ensure_schema`
-reads `SHOW GRANTS FOR CURRENT_USER` and stops if the credential holds anything
-beyond `datum.samples` and `datum.*`, naming the grant. It checks rather than
-applies: revoking its own grants would mean holding `GRANT OPTION` on them, and
-a credential that can narrow itself can widen itself again.
+There is no `custom_settings_prefixes` to set any more. `SQL_datum_resource_id`
+existed to feed the row policy on datum's own reads; with the read path gone,
+both are gone. If a deployment still carries that `config.d/datum.xml`, it is
+inert and can be removed.
 
-So a deployment that skips the revoke fails loudly on boot rather than serving
-reads that can walk out through `system.*`.
-
-Insights reads with its **own** user and is deliberately outside the policy —
-`TO datum` names the API's user only, so the BI path still sees the fleet.
+Readers get their own users, and their own policies if they need scoping. datum
+has no say in either.
 
 ## Tokens
 
@@ -230,13 +195,15 @@ Every call carries a JWT that Central signed: `Authorization: Bearer <jwt>`.
 
 **`access` says what the token may do.** Central signs bench logins, site logins
 and enrolment tokens with the same key; without this, any of them would be
-accepted here. A token that claims neither gets a 403 on every route.
+accepted here. Only `write` means anything to datum now — a token carrying
+`read` keeps the claim and is not refused for it, but there is nothing here to
+read. A token without `write` gets a 403 on every route.
 
 **`resource_id` says where the metrics came from**, and it is the only label the
 token carries. One machine, one id. Everything else — which team owns it, which
 cluster it sits in — is Central's to answer, not a label on every sample. It is
-required: writes are stamped with it and reads are scoped by it, so a token
-without one is a 401 rather than a caller whose access is then judged.
+required: every row is stamped with it, so a token without one is a 401 rather
+than a caller whose access is then judged.
 
 Signatures must be RSA or ECDSA. HMAC is never accepted.
 
@@ -246,9 +213,9 @@ Signatures must be RSA or ECDSA. HMAC is never accepted.
 |---|---|
 | 200 | answered, or stored |
 | 204 | stored, via remote write |
-| 400 | ClickHouse refused the query, or the remote write body was unreadable |
+| 400 | ClickHouse refused the write, or the remote write body was unreadable |
 | 401 | JWT missing, unsigned, expired, signed by the wrong key, or naming no `resource_id` |
-| 403 | the token may not do that: no `read`, or no `write` |
+| 403 | the token may not do that: no `write` |
 | 429 | too many requests for that route; `Retry-After` says how long |
 | 413 | decompressing past 12 MB, more than 10,000 samples or series, or a series wider than 64 labels |
 | 415 | remote write v2, which is not read here |
@@ -261,11 +228,10 @@ Signatures must be RSA or ECDSA. HMAC is never accepted.
 |---|---|---|
 | `DATUM_CLICKHOUSE_HOST` | required | where ClickHouse is |
 | `DATUM_CLICKHOUSE_PORT` | `8123` | its HTTP port |
-| `DATUM_CLICKHOUSE_USER` | `default` | needs SELECT and INSERT, nothing more |
+| `DATUM_CLICKHOUSE_USER` | `default` | needs INSERT, nothing more |
 | `DATUM_CLICKHOUSE_PASSWORD` | empty | |
 | `DATUM_CLICKHOUSE_DATABASE` | `datum` | |
 | `DATUM_CLICKHOUSE_TABLE` | `samples` | |
-| `DATUM_MAX_ROWS` | `100000` | cap on one read |
 | `DATUM_TIMEOUT` | `30` | seconds, connect and execute |
 | `DATUM_JWT_PUBLIC_KEY_FILE` | none | the PEM file to check tokens against |
 | `DATUM_OIDC_ISSUER` | none | fetch keys from an issuer instead. With neither, every call is a 401 |

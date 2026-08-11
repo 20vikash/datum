@@ -47,36 +47,41 @@ def test_the_identity_is_the_resource_id_and_what_it_may_do():
     identity = Identity.from_claims({"resource_id": "acme", "access": ["read", "write"]})
 
     assert identity.resource_id == "acme"
-    assert (identity.can_read, identity.can_write) == (True, True)
+    assert identity.can_write is True
+    assert identity.access == frozenset({"read", "write"})
 
 
 def test_access_may_be_written_as_one_string():
     claims = {"resource_id": "acme", "access": "read write"}
 
-    assert Identity.from_claims(claims).can_read is True
+    assert Identity.from_claims(claims).access == frozenset({"read", "write"})
 
 
 def test_a_token_claiming_no_access_may_do_nothing():
     identity = Identity.from_claims({"resource_id": "acme"})
 
-    assert (identity.can_read, identity.can_write) == (False, False)
+    assert identity.can_write is False
 
 
-def test_read_and_write_are_separate():
+def test_a_read_claim_is_kept_but_grants_nothing():
+    """Central still mints `read`; datum serves no reads, and does not refuse it."""
     reader = Identity.from_claims({"resource_id": "acme", "access": ["read"]})
 
-    assert (reader.can_read, reader.can_write) == (True, False)
+    assert reader.can_write is False
+    assert "read" in reader.access
 
 
 def test_v1_refuses_an_anonymous_caller(anonymous):
-    response = anonymous.post("/v1/query", json={"sql": "SELECT * FROM cpu"})
+    response = anonymous.post("/v1/ingest", json={"samples": []})
 
     assert response.status_code == 401
     assert response.headers["www-authenticate"] == "Bearer"
 
 
 def test_v1_refuses_an_unknown_token(anonymous):
-    response = anonymous.get("/v1/metrics", headers={"Authorization": "Bearer wrong"})
+    response = anonymous.post(
+        "/v1/ingest", json={"samples": []}, headers={"Authorization": "Bearer wrong"}
+    )
 
     assert response.status_code == 401
 
@@ -87,14 +92,14 @@ def test_health_stays_open(anonymous):
 
 def test_auth_runs_before_validation(anonymous):
     """A bad body from a stranger is a 401, never a 422 describing our schema."""
-    response = anonymous.post("/v1/query", json={"nonsense": True})
+    response = anonymous.post("/v1/ingest", json={"nonsense": True})
 
     assert response.status_code == 401
 
 
 def test_a_token_without_a_resource_id_is_no_identity_at_all(tokens):
-    """Reads are scoped by it and writes are stamped with it, so a token
-    without one has nothing to address."""
+    """Every row is stamped with it, so a token without one has nothing
+    to address."""
     assert tokens.resolve(mint({"access": ["read", "write"]})) is None
 
 
