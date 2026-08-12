@@ -12,6 +12,7 @@ from datum.api.internals import (
     MetricProvider,
     TokenVerifier,
 )
+from datum.api.limiter import RateLimiter
 from datum.api.routes import router
 from datum.config import Settings
 
@@ -112,6 +113,7 @@ def create_app(
     app.state.settings = settings or Settings.from_env()
     app.state.tokens = tokens or TokenVerifier.from_env()
     app.state.provider = provider
+    app.state.limiter = RateLimiter()
     app.state.log_provider = log_provider
 
     errors.install(app)
