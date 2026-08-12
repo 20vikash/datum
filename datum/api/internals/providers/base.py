@@ -25,3 +25,20 @@ class MetricProvider(ABC):
     @abstractmethod
     def ingest(self, rows: list[dict]) -> int:
         """Write one batch, keyed by column name. Returns rows accepted."""
+
+
+class LogProvider(ABC):
+    """What the service needs from a logs store, and nothing more.
+
+    A parallel of `MetricProvider` for the logs table. One that forgets a
+    method fails at construction. Datum writes only: reads go to ClickHouse
+    directly.
+    """
+
+    @abstractmethod
+    def ensure_schema(self) -> None:
+        """Make the store ready to accept log lines. Idempotent."""
+
+    @abstractmethod
+    def ingest(self, rows: list[dict]) -> int:
+        """Write one batch of log lines, keyed by column name. Returns rows accepted."""
