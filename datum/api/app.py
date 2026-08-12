@@ -95,11 +95,6 @@ def create_app(
     async def dump_body(request: Request, call_next):
         body = await request.body()
 
-        print("=" * 80)
-        print("CONTENT-TYPE:", request.headers.get("content-type"))
-        print(body.decode("utf-8", errors="replace"))
-        print("=" * 80)
-
         async def receive():
             return {
                 "type": "http.request",
