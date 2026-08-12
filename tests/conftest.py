@@ -4,7 +4,7 @@ from fastapi.testclient import TestClient
 
 from datum import Settings, create_app
 from datum.api.internals import Identity, TokenVerifier
-from datum.api.internals.providers import MetricProvider
+from datum.api.internals.providers import LogProvider, MetricProvider
 
 SETTINGS = Settings(host="localhost")
 
@@ -54,7 +54,7 @@ awIDAQAB
 """
 
 
-CLAIMS = {"resource_id": "acme", "access": ["read", "write"]}
+CLAIMS = {"resource_id": "acme", "access": ["read", "write"], "aud": "test-audience"}
 IDENTITY = Identity(resource_id="acme", access=frozenset({"read", "write"}))
 
 
@@ -95,6 +95,22 @@ class FakeProvider(MetricProvider):
         return len(rows)
 
 
+class FakeLogProvider(LogProvider):
+    """Stands in for the logs table, so route tests open no socket."""
+
+    def __init__(self, **options):
+        self.options = options
+        self.written: list[dict] = []
+        self.prepared = False
+
+    def ensure_schema(self):
+        self.prepared = True
+
+    def ingest(self, rows):
+        self.written.extend(rows)
+        return len(rows)
+
+
 @pytest.fixture
 def tokens():
     return TokenVerifier(PUBLIC_KEY)
@@ -106,9 +122,16 @@ def provider():
 
 
 @pytest.fixture
-def client(tokens, provider):
+def log_provider():
+    return FakeLogProvider()
+
+
+@pytest.fixture
+def client(tokens, provider, log_provider):
     """Authenticated, the way a caller talks to the service."""
-    app = create_app(SETTINGS, tokens=tokens, provider=provider)
+    app = create_app(
+        SETTINGS, tokens=tokens, provider=provider, log_provider=log_provider
+    )
     with TestClient(app, headers={"Authorization": f"Bearer {TOKEN}"}) as test_client:
         yield test_client
 
@@ -124,6 +147,11 @@ def other_tenant(tokens, provider):
 
 @pytest.fixture
 def anonymous():
-    app = create_app(SETTINGS, tokens=TokenVerifier(), provider=FakeProvider())
+    app = create_app(
+        SETTINGS,
+        tokens=TokenVerifier(),
+        provider=FakeProvider(),
+        log_provider=FakeLogProvider(),
+    )
     with TestClient(app) as test_client:
         yield test_client
