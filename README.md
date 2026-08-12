@@ -29,11 +29,12 @@ moves on.
 Everything real lives under `/v1`. `/health` does not, so a future `/v2` cannot
 break a health check.
 
-| Method | Path | What it does |
-|---|---|---|
-| `POST` | `/v1/ingest` | JSON samples in, `{"accepted": n}` out |
-| `POST` | `/v1/ingest/remote` | Prometheus remote write, `204` out |
-| `GET` | `/health` | liveness |
+| Method   | Path                    | What it does                           |
+| -------- | ----------------------- | -------------------------------------- |
+| `POST`   | `/v1/ingest`            | JSON samples in, `{"accepted": n}` out |
+| `POST`   | `/v1/ingest/remote`     | Prometheus remote write, `204` out     |
+| `POST`   | `/v1/logs/ingest`       | JSON log lines in, `{"accepted": n}` out |
+| `GET`    | `/health`               | liveness                               |
 
 Browse them at `/docs`. Raw schema at `/v1/openapi.json`.
 
@@ -63,6 +64,34 @@ There is no TTL. Nothing expires on its own.
 
 The API creates this at startup when it is missing, so it needs DDL rights the
 first time it runs. It is written down once, in `datum/config/clickhouse.py`.
+
+### The logs table
+
+A second table holds log lines from the fleet, under the same JWT and the same
+`resource_id` tenant boundary:
+
+```sql
+CREATE TABLE datum.logs
+(
+    ts          DateTime64(3, 'UTC') CODEC(Delta, ZSTD),
+    resource_id LowCardinality(String),
+    product     LowCardinality(String),
+    service     LowCardinality(String),
+    level       LowCardinality(String),
+    source      LowCardinality(String),
+    message     String CODEC(ZSTD),
+    attributes  Map(LowCardinality(String), String)
+)
+ENGINE = MergeTree
+PARTITION BY (toYear(ts), toQuarter(ts))
+ORDER BY (resource_id, product, service, ts)
+```
+
+`product` and `service` are sort keys, not map entries, because a fleet's reads
+name them. `attributes` carries everything product-specific that no fleet-wide
+query filters on. The same row policy that scopes `datum.samples` scopes this
+table too, so a leaked read token cannot enumerate another tenant's log lines.
+
 
 ## Sending data
 
@@ -115,6 +144,31 @@ Over it the answer is `413` and nothing is stored. An agent will retry the same
 oversized batch, so lower its `max_samples_per_send` rather than waiting for it
 to drain.
 
+### Logs
+
+Point a log shipper (Fluent Bit, Vector, the OTel collector) at `/v1/logs/ingest`
+with the same `Authorization: Bearer <jwt>` header:
+
+```bash
+curl -X POST http://localhost:8000/v1/logs/ingest \
+  -H "Authorization: Bearer $JWT" \
+  -H "Content-Type: application/json" \
+  -d '{"lines": [
+        {"ts": "2026-08-05T10:00:00Z",
+         "product": "pilot",
+         "service": "worker",
+         "level": "info",
+         "source": "worker_pool.log",
+         "message": "job done",
+         "attributes": {"queue": "default"}}]}'
+```
+
+Up to 10,000 lines per batch. `product`, `service`, `level` and `source` must
+match `^[a-zA-Z0-9_./-]{1,200}$`; attribute names must match
+`^[a-zA-Z_][a-zA-Z0-9_]*$`; one message may be up to 8 KiB. There is no
+`resource_id` field — a smuggled one inside `attributes` is dropped, exactly
+as on the metrics path.
+
 ## Reading data
 
 Not through datum. Point your reader at ClickHouse with its own credential:
@@ -165,7 +219,7 @@ The API's user, granted only what it uses:
 ```sql
 CREATE USER datum IDENTIFIED BY '...';
 REVOKE ALL ON *.* FROM datum;
-GRANT INSERT ON datum.samples TO datum;
+GRANT INSERT ON datum.samples, datum.logs TO datum;
 GRANT CREATE DATABASE, CREATE TABLE ON datum.* TO datum;
 ```
 
@@ -224,30 +278,46 @@ Signatures must be RSA or ECDSA. HMAC is never accepted.
 
 ## Configuration
 
-| Variable | Default | What it does |
-|---|---|---|
-| `DATUM_CLICKHOUSE_HOST` | required | where ClickHouse is |
-| `DATUM_CLICKHOUSE_PORT` | `8123` | its HTTP port |
-| `DATUM_CLICKHOUSE_USER` | `default` | needs INSERT, nothing more |
-| `DATUM_CLICKHOUSE_PASSWORD` | empty | |
-| `DATUM_CLICKHOUSE_DATABASE` | `datum` | |
-| `DATUM_CLICKHOUSE_TABLE` | `samples` | |
-| `DATUM_TIMEOUT` | `30` | seconds, connect and execute |
-| `DATUM_JWT_PUBLIC_KEY_FILE` | none | the PEM file to check tokens against |
-| `DATUM_OIDC_ISSUER` | none | fetch keys from an issuer instead. With neither, every call is a 401 |
+| Variable                    | Default   | What it does                                      |
+| --------------------------- | --------- | ------------------------------------------------- |
+| `DATUM_CLICKHOUSE_HOST`     | required  | where ClickHouse is                               |
+| `DATUM_CLICKHOUSE_PORT`     | `8123`    | its HTTP port                                     |
+| `DATUM_CLICKHOUSE_USER`     | `default` | needs INSERT, nothing more                       |
+| `DATUM_CLICKHOUSE_PASSWORD` | empty     |                                                   |
+| `DATUM_CLICKHOUSE_DATABASE` | `datum`   |                                                   |
+| `DATUM_CLICKHOUSE_TABLE`    | `samples` | the metrics table                                 |
+| `DATUM_LOG_TABLE`           | `logs`    | the logs table                                    |
+| `DATUM_TIMEOUT`             | `30`      | seconds, connect and execute                     |
+| `DATUM_JWT_PUBLIC_KEY_FILE` | none      | the PEM file to check tokens against             |
+| `DATUM_OIDC_ISSUER`         | none      | fetch keys from an issuer instead. With neither, every call is a 401 |
 
 ## Running it
 
 ```bash
-docker run -d --name clickhouse -p 8123:8123 clickhouse/clickhouse-server
+# 1. Start ClickHouse. For the dev image, enable access management on `default`
+#    so it can create the scoped `datum` user (skip ACCESS_MANAGEMENT in prod,
+#    where an admin already exists).
+docker run -d --name clickhouse -p 8123:8123 \
+  -e CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1 \
+  clickhouse/clickhouse-server
 
+# 2. Create the datum user and grants (one-time). See "Setting the ClickHouse
+#    side up" below for what this does and why the revoke matters.
+clickhouse-client --multiquery < setup.sql
+
+# 3. Also set <custom_settings_prefixes>SQL_</custom_settings_prefixes> in
+#    config.d/datum.xml, or every read fails. See below.
+
+# 4. Generate a test keypair and start the API.
 mkdir -p .dev
 openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out .dev/central.key
 openssl rsa -in .dev/central.key -pubout -out .dev/central.pub
 chmod 600 .dev/central.key
 
 uv sync --all-groups
-DATUM_CLICKHOUSE_HOST=127.0.0.1 DATUM_JWT_PUBLIC_KEY_FILE=.dev/central.pub \
+DATUM_CLICKHOUSE_HOST=127.0.0.1 \
+DATUM_CLICKHOUSE_USER=datum DATUM_CLICKHOUSE_PASSWORD=changeme \
+DATUM_JWT_PUBLIC_KEY_FILE=.dev/central.pub \
   uv run uvicorn datum.api.app:create_app --factory --port 8000
 ```
 
