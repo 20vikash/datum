@@ -133,9 +133,7 @@ def test_an_admin_naming_no_machine_cannot_write():
 
 
 def test_an_admin_that_also_names_a_machine_can_write():
-    identity = Identity.from_claims(
-        {"admin": True, "resource_id": "acme", "access": ["write"]}
-    )
+    identity = Identity.from_claims({"admin": True, "resource_id": "acme", "access": ["write"]})
 
     assert (identity.can_write, identity.is_admin) == (True, True)
 

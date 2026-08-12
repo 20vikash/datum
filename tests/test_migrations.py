@@ -114,9 +114,7 @@ def test_running_applies_every_file(client):
 def test_the_acl_runs_before_the_tables(client):
     apply()
 
-    first_user = next(
-        i for i, c in enumerate(client.commands) if c.startswith("CREATE USER")
-    )
+    first_user = next(i for i, c in enumerate(client.commands) if c.startswith("CREATE USER"))
     first_table = next(i for i, c in enumerate(client.commands) if "CREATE TABLE" in c)
     assert first_user < first_table
 

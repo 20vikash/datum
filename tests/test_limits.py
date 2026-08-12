@@ -101,5 +101,3 @@ def test_a_wide_series_is_a_413(client, provider):
 
     assert client.post("/v1/ingest/remote", content=body).status_code == 413
     assert provider.written == []
-
-
