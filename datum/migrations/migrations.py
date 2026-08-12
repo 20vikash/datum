@@ -8,6 +8,7 @@ from string import Template
 import clickhouse_connect
 
 DIRECTORY = Path(__file__).parent
+UNSAFE = ("'", "\\", ";", "--", "\n", "\r")
 
 
 def get_migrations() -> list[Path]:
@@ -21,9 +22,19 @@ def get_statements(sql: str) -> list[str]:
     return [statement.strip() for statement in "\n".join(lines).split(";") if statement.strip()]
 
 
+def check_password(name: str, value: str) -> str:
+    """Refuse rather than escape: these run as the migration user, so a password that
+    can rewrite the statement around it is a password that can run anything."""
+    found = [token for token in UNSAFE if token in value]
+    if found:
+        raise SystemExit(f"{name} may not contain: {' '.join(found)}")
+    return value
+
+
 def run_migrations(host: str, port: int, username: str, password: str, **passwords) -> list[str]:
     """Apply every file, substituting the `${...}` passwords. Connects as whoever it is
     given: creating users and tables needs more than datum-api ever holds."""
+    passwords = {name: check_password(name, value) for name, value in passwords.items()}
     client = clickhouse_connect.get_client(
         host=host, port=port, username=username, password=password
     )

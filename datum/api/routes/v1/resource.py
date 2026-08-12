@@ -8,6 +8,7 @@ from datum.api.dependencies import Admin, Provider, rate_limit
 from datum.api.internals.schemas import (
     TERMINATED,
     Resource,
+    ResourceId,
     ResourceResponse,
     ResourceUpdate,
 )
@@ -34,7 +35,7 @@ def add_resource(
 
 @resource_router.put("/{resource_id}/status")
 def update_resource_status(
-    resource_id: str,
+    resource_id: ResourceId,
     update: ResourceUpdate,
     provider: Provider,
     admin: Admin,
@@ -45,7 +46,7 @@ def update_resource_status(
 
 @resource_router.delete("/{resource_id}")
 def delete_resource(
-    resource_id: str,
+    resource_id: ResourceId,
     provider: Provider,
     admin: Admin,
     _: Annotated[None, rate_limit(ADMIN_WRITES)],

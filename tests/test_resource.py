@@ -2,6 +2,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from datum import create_app
+from datum.config.limits import MAX_RESOURCE_ID
 from tests.conftest import SETTINGS, mint
 
 ADMIN = {"admin": True}
@@ -89,3 +90,38 @@ def test_an_admin_without_a_resource_id_still_cannot_ingest(admin, provider):
 
     assert response.status_code == 403
     assert provider.written == []
+
+
+def test_an_oversized_resource_id_is_refused_in_the_body(admin, provider):
+    response = admin.post(
+        "/v1/resource/add", json={"resource_id": "x" * (MAX_RESOURCE_ID + 1), "status": "Active"}
+    )
+
+    assert response.status_code == 422
+    assert provider.resources == []
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "body"),
+    [
+        ("put", "/v1/resource/{id}/status", {"status": "Active"}),
+        ("delete", "/v1/resource/{id}", None),
+    ],
+)
+def test_an_oversized_resource_id_is_refused_in_the_path(admin, provider, method, path, body):
+    """The body is bounded by `Resource`; a path parameter is bounded by nothing
+    unless the route says so, and a written row is permanent."""
+    url = path.format(id="x" * (MAX_RESOURCE_ID + 1))
+
+    call = getattr(admin, method)
+    response = call(url, json=body) if body else call(url)
+
+    assert response.status_code == 422
+    assert provider.resources == []
+
+
+def test_a_resource_id_at_the_limit_is_accepted(admin, provider):
+    at_limit = "x" * MAX_RESOURCE_ID
+
+    assert admin.delete(f"/v1/resource/{at_limit}").status_code == 200
+    assert provider.resources == [(at_limit, "Terminated")]

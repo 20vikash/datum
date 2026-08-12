@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import re
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal
 
+from fastapi import Path
 from pydantic import BaseModel, Field, field_validator
 
 from datum.config.limits import MAX_BATCH, MAX_LABELS, MAX_RESOURCE_ID
@@ -64,3 +65,5 @@ class ResourceUpdate(BaseModel):
 
 class ResourceResponse(BaseModel):
     accepted: int
+
+ResourceId = Annotated[str, Path(min_length=1, max_length=MAX_RESOURCE_ID)]

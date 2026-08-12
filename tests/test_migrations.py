@@ -207,3 +207,36 @@ def test_a_missing_datum_password_fails_before_connecting(monkeypatch):
 
     with pytest.raises(SystemExit, match="DATUM_CLICKHOUSE_PASSWORD"):
         migrations.main()
+
+
+@pytest.mark.parametrize(
+    "password",
+    ["pa'ss", "pa;ss", "pa--ss", "pa\\ss", "pa\nss"],
+)
+def test_a_password_that_could_rewrite_the_sql_is_refused(client, password):
+    """`;` splits the statement and `--` swallows the next line, both as the migration
+    user. Refused before a connection is opened, not escaped."""
+    with pytest.raises(SystemExit, match="may not contain"):
+        apply(INSIGHTS_PASSWORD=password)
+
+    assert client.commands == []
+
+
+def test_an_ordinary_password_with_punctuation_is_allowed(client):
+    apply(INSIGHTS_PASSWORD="p@ss-w0rd_!#%^&*()+=")
+
+    assert any("IDENTIFIED BY 'p@ss-w0rd_!#%^&*()+='" in c for c in client.commands)
+
+
+def test_the_datum_password_is_held_to_the_same_rule(client):
+    with pytest.raises(SystemExit, match="DATUM_PASSWORD"):
+        apply(DATUM_PASSWORD="pa;ss")
+
+
+def test_the_resources_version_column_resolves_below_a_second():
+    """DateTime ties two writes in the same second, so ReplacingMergeTree picks
+    arbitrarily and readers can see stale status."""
+    schema = (migrations.DIRECTORY / "001_init_schema.sql").read_text()
+
+    assert "updated_at  DateTime64(3, 'UTC') DEFAULT now64(3)" in schema
+    assert "ReplacingMergeTree(updated_at)" in schema
