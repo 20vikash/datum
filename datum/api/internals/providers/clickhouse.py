@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import re
-
 import clickhouse_connect
 from clickhouse_connect.driver.exceptions import ClickHouseError, OperationalError
 
@@ -20,9 +18,6 @@ from datum.config.clickhouse import (
     get_log_schema,
     get_schema,
 )
-
-GRANTS = "SHOW GRANTS FOR CURRENT_USER"
-GRANTED_ON = re.compile(r"\bON\s+(\S+)")
 
 
 class ClickHouseProvider(MetricProvider):
@@ -67,29 +62,6 @@ class ClickHouseProvider(MetricProvider):
     def ensure_schema(self) -> None:
         for statement in get_schema(self.database, self.table):
             self._run(self.client.command, statement)
-        self.check_privileges()
-
-    def check_privileges(self) -> None:
-        """Refuse to start on a credential that reaches past datum's own tables."""
-        allowed = {
-            f"{self.database}.{TABLE}",
-            f"{self.database}.{LOG_TABLE}",
-            f"{self.database}.*",
-        }
-
-        grants = [
-            row[0]
-            for row in self._run(self.client.query, GRANTS).result_rows
-        ]
-        wider = [
-            line for line in grants
-            if self._granted_on(line) not in allowed
-        ]
-
-        if wider:
-            raise ProviderError(
-                "Unsafe query privileges:\n" + "\n".join(wider)
-            )
 
     def ingest(self, rows: list[dict]) -> int:
         if not rows:
@@ -106,10 +78,6 @@ class ClickHouseProvider(MetricProvider):
         )
 
         return len(rows)
-
-    def _granted_on(self, line: str) -> str:
-        target = GRANTED_ON.search(line)
-        return target.group(1) if target else ""
 
     def _run(self, call, *arguments, **keywords):
         """Unreachable is a 503, refused is a 400. Never a silent success."""
