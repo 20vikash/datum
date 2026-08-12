@@ -9,10 +9,11 @@ from pathlib import Path
 
 import jwt
 
-from datum.config.clickhouse import RESOURCE_LABEL
-
 ACCESS_CLAIM = "access"
+ADMIN_CLAIM = "admin"
 WRITE = "write"
+
+ADMIN_CALLER = "admin"
 ALGORITHMS = ["RS256", "RS384", "RS512", "ES256", "ES384", "ES512"]
 
 PUBLIC_KEY_PATH_VARIABLE = "DATUM_JWT_PUBLIC_KEY_FILE"
@@ -25,33 +26,44 @@ DISCOVERY_TIMEOUT = 5.0
 
 @dataclass(frozen=True)
 class Identity:
-    """What a token says: who it speaks for, and whether it may write.
+    """Who a token speaks for, and what it may do.
 
-    Central signs bench and site logins with the same key, so a token that
-    claims no access gets nothing here. `access` keeps every claim it carries,
-    including `read`, which datum no longer serves and does not reject.
+    Central signs bench and site logins with the same key, so a token claiming
+    no access gets nothing here. `read` is kept but no longer served.
     """
 
-    resource_id: str
+    resource_id: str = ""
     access: frozenset[str] = frozenset()
+    is_admin: bool = False
+
+    @property
+    def caller(self) -> str:
+        """Admins share one budget: they name no resource."""
+        return ADMIN_CALLER if self.is_admin else self.resource_id
 
     @property
     def can_write(self) -> bool:
-        return WRITE in self.access
+        """Every row is stamped with `resource_id`, so a token without one cannot write."""
+        return WRITE in self.access and bool(self.resource_id)
 
     @classmethod
     def from_claims(cls, claims: dict) -> Identity:
-        """No resource_id, no identity: every row is stamped with it, so a token
-        without one has nothing to address."""
-        resource_id = claims.get(RESOURCE_LABEL)
-        if not resource_id:
-            raise jwt.InvalidTokenError(f"Token carries no {RESOURCE_LABEL}.")
+        """A machine names itself; an admin names the fleet, so it may carry none."""
+        resource_id = claims.get("resource_id")
+        is_admin = claims.get(ADMIN_CLAIM) is True
+
+        if not resource_id and not is_admin:
+            raise jwt.InvalidTokenError("Token carries no resource_id.")
+
         access = claims.get(ACCESS_CLAIM) or ()
+
         if isinstance(access, str):
             access = access.split()
+
         return cls(
-            resource_id=str(resource_id),
+            resource_id=str(resource_id or ""),
             access=frozenset(str(entry) for entry in access),
+            is_admin=is_admin,
         )
 
 

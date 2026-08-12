@@ -25,7 +25,6 @@ def get_provider(settings: Settings) -> MetricProvider:
         username=settings.username,
         password=settings.password,
         database=settings.database,
-        table=settings.table,
         timeout=settings.timeout,
     )
 
@@ -33,8 +32,13 @@ def get_provider(settings: Settings) -> MetricProvider:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.provider = app.state.provider or get_provider(app.state.settings)
-    app.state.provider.ensure_schema()
+    assert isinstance(app.state.provider, MetricProvider)
+
+    if not app.state.provider.ping():
+        raise RuntimeError("ClickHouse is not reachable; ensure migrations have run.")
+
     yield
+    app.state.provider.close()
 
 
 def create_app(

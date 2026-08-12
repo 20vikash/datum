@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import re
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
-from datum.config.clickhouse import RESOURCE_LABEL
-from datum.config.limits import MAX_BATCH, MAX_LABELS
+from datum.config.limits import MAX_BATCH, MAX_LABELS, MAX_RESOURCE_ID
 
 NAME = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
@@ -29,11 +29,11 @@ class Sample(BaseModel):
 
     def get_row(self, resource_id: str) -> dict:
         """One table row. The token owns `resource_id`, so a claimed one is dropped."""
-        labels = {name: value for name, value in self.labels.items() if name != RESOURCE_LABEL}
+        labels = {name: value for name, value in self.labels.items() if name != "resource_id"}
         return {
             "ts": self.ts,
             "metric": self.metric,
-            RESOURCE_LABEL: resource_id,
+            "resource_id": resource_id,
             "labels": labels,
             "value": self.value,
         }
@@ -44,4 +44,23 @@ class SamplesRequest(BaseModel):
 
 
 class IngestResponse(BaseModel):
+    accepted: int
+
+
+ResourceStatus = Literal["Active", "Terminated", "Pending"]
+TERMINATED: ResourceStatus = "Terminated"
+
+
+class Resource(BaseModel):
+    """Unlike a sample, the id comes from the body: an admin speaks for the fleet."""
+
+    resource_id: str = Field(min_length=1, max_length=MAX_RESOURCE_ID)
+    status: ResourceStatus
+
+
+class ResourceUpdate(BaseModel):
+    status: ResourceStatus
+
+
+class ResourceResponse(BaseModel):
     accepted: int
