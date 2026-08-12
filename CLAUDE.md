@@ -146,7 +146,7 @@ Insights ───────────────────────�
 
 - The environment is managed by `uv`. Use `uv run`, `uv add`, `uv sync`.
 - Run `uv run pytest` and `uv run ruff check .` after changes.
-- A schema change needs a matching change in `COLUMNS`, and a test asserting the insert order.
+- A schema change needs a matching change in `METRICS_COLUMNS`, and a test asserting the insert order.
 - Every cap lives in `config/limits.py`, and every one of them is reached after the body is
   read. What bounds the raw body is `client_max_body_size` in the vhost, not datum: the caps
   here bound what a body is allowed to *become*, not what arrives. Remote write is the

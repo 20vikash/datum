@@ -1,12 +1,3 @@
-"""Run the .sql files beside this one, in name order.
-
-The first thing a deploy runs; datum-api never issues DDL. Every statement is
-`IF NOT EXISTS`, so running it twice is a no-op.
-
-Connection details come from the env file the service already reads. Only Insights'
-password is passed in: datum never connects as that user, so it is stored nowhere.
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -31,7 +22,8 @@ def get_statements(sql: str) -> list[str]:
 
 
 def run_migrations(host: str, port: int, username: str, password: str, **passwords) -> list[str]:
-    """We initially connect as default user and then create other users."""
+    """Apply every file, substituting the `${...}` passwords. Connects as whoever it is
+    given: creating users and tables needs more than datum-api ever holds."""
     client = clickhouse_connect.get_client(
         host=host, port=port, username=username, password=password
     )
@@ -46,7 +38,7 @@ def run_migrations(host: str, port: int, username: str, password: str, **passwor
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="datum-migrate")
-    parser.add_argument("--default-user-password", required=False)
+    parser.add_argument("--default-user-password", default="")
     parser.add_argument("--insights-user-password", required=True)
     arguments = parser.parse_args()
 
