@@ -66,4 +66,5 @@ class ResourceUpdate(BaseModel):
 class ResourceResponse(BaseModel):
     accepted: int
 
+
 ResourceId = Annotated[str, Path(min_length=1, max_length=MAX_RESOURCE_ID)]
