@@ -45,7 +45,8 @@ write token. See [Tokens](#tokens).
 
 ## The tables
 
-Two tables, both created by the migrations.
+Three tables and one view, all created by the migrations. Datum writes to two of
+them; ClickHouse maintains the third by itself.
 
 **`datum.samples`** holds every reading:
 
@@ -85,6 +86,41 @@ status is both the insert and the update. `updated_at` is what decides which row
 is newest, which is why it is millisecond precision — with whole seconds, two
 changes in the same second would tie and ClickHouse would pick either one.
 
+**`datum.daily_ingestion_stats`** counts how many samples each machine sent per
+day. Datum never writes to it — `datum.mv_daily_ingestion_stats` is a
+materialized view that watches inserts into `samples` and fills it in:
+
+```sql
+CREATE TABLE datum.daily_ingestion_stats
+(
+    date         Date,
+    resource_id  String,
+    metric_count SimpleAggregateFunction(sum, UInt64)
+)
+ENGINE = SummingMergeTree()
+ORDER BY (date, resource_id);
+
+CREATE MATERIALIZED VIEW datum.mv_daily_ingestion_stats
+TO datum.daily_ingestion_stats AS
+SELECT toDate(ts) AS date, resource_id, count() AS metric_count
+FROM datum.samples
+GROUP BY date, resource_id;
+```
+
+It exists to spot a machine that starts sending far more than it used to. A
+`SummingMergeTree` only adds rows up when it merges, so read it with
+`sum(metric_count)` and a `GROUP BY` rather than trusting one row per day:
+
+```sql
+SELECT date, resource_id, sum(metric_count)
+FROM datum.daily_ingestion_stats
+WHERE date >= today() - 7
+GROUP BY date, resource_id ORDER BY 3 DESC;
+```
+
+The view only sees inserts made after it exists. It does not backfill from rows
+already in `samples`.
+
 There is no TTL. Nothing expires on its own.
 
 ## Setting it up
@@ -106,7 +142,7 @@ DATUM_JWT_PUBLIC_KEY_FILE=.dev/central.pub
 ENV
 ```
 
-**2. Run the migrations.** This creates the database, both tables, and both
+**2. Run the migrations.** This creates the database, every table, and both
 ClickHouse users.
 
 ```bash
@@ -130,8 +166,8 @@ They live in `datum/migrations/` as plain `.sql` files, run in filename order:
 | File | What it does |
 |---|---|
 | `000_acl.sql` | creates the `datum` and `insights` users and grants them |
-| `001_init_schema.sql` | creates the database and both tables |
-| `002_ingestion_stats.sql` | a daily per-resource ingest count, for spotting runaway metrics |
+| `001_init_schema.sql` | creates the database, `samples` and `resources` |
+| `002_ingestion_stats.sql` | `daily_ingestion_stats` and the view that fills it |
 
 Everything is `IF NOT EXISTS`, so running it twice changes nothing.
 

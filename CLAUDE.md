@@ -16,7 +16,7 @@ ClickHouse stores them. Readers get them back from ClickHouse directly — datum
 - **Routes name their own table and columns.** `ingest.py` and `resource.py` each hold a
   `TABLE` and a `COLUMNS` constant and pass both to `provider.insert(...)`. The provider knows
   no table names at all, so adding a table is a new route constant, not a provider change.
-- **Datum issues no DDL.** The database, both tables and both ClickHouse users are made by
+- **Datum issues no DDL.** The database, every table and both ClickHouse users are made by
   `datum/migrations/`, run before the service starts. `create_app`'s lifespan pings ClickHouse
   and refuses to start if it cannot answer. Do not add schema creation back into the service:
   two places creating one table is two definitions that drift.
@@ -55,7 +55,8 @@ ClickHouse stores them. Readers get them back from ClickHouse directly — datum
   - `migrations/` — the schema, as plain `.sql` files run in filename order
     - `000_acl.sql` — the `datum` and `insights` users, and their grants
     - `001_init_schema.sql` — the database, `samples` and `resources`
-    - `002_ingestion_stats.sql` — a daily per-resource ingest count
+    - `002_ingestion_stats.sql` — `daily_ingestion_stats` plus the materialized view that
+      fills it from inserts into `samples`
     - `migrations.py` — `datum-migrate`; substitutes the passwords, splits and runs
   - `api/app.py` — `create_app(settings, tokens, provider)`; builds the provider once at
     startup and pings it, so a missing schema fails loudly there
@@ -136,6 +137,10 @@ Insights ───────────────────────�
 - `resources` is `ReplacingMergeTree(updated_at)`, so an insert is also the update: the newest
   row per `resource_id` wins. `updated_at` is `DateTime64(3)` because whole seconds would tie
   two changes made in the same second and ClickHouse would keep either one.
+- `daily_ingestion_stats` is fed by a materialized view on `samples`, so datum writes to it
+  never. A view only sees inserts made after it exists and does not backfill, so adding one in
+  a later migration leaves a gap. `SummingMergeTree` sums on merge, so read it with
+  `sum(metric_count)` and a `GROUP BY`, not one row per day.
 - `labels` is a `Map`. Filtering on a map key is not an index hit the way a sort key is. If a
   label becomes hot enough to matter, promote it to a column rather than adding an index.
 - `Delta` on the timestamp and `Gorilla` on the value are doing most of the compression. Do not
