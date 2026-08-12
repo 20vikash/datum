@@ -10,7 +10,6 @@ from google.protobuf.message import DecodeError
 
 from datum.api.internals.remote.remote_write_pb2 import WriteRequest
 from datum.api.internals.schemas import NAME
-from datum.config.clickhouse import RESOURCE_LABEL
 from datum.config.limits import MAX_BATCH, MAX_DECOMPRESSED, MAX_LABELS
 
 NAME_LABEL = "__name__"
@@ -72,7 +71,7 @@ def decode(body: bytes, resource_id: str) -> list[dict]:
             {
                 "ts": datetime.fromtimestamp(sample.timestamp / 1000, UTC),
                 "metric": metric,
-                RESOURCE_LABEL: resource_id,
+                "resource_id": resource_id,
                 "labels": labels,
                 "value": sample.value,
             }
@@ -91,7 +90,7 @@ def _series(series) -> tuple[str, dict[str, str]]:
     for label in series.labels:
         if label.name == NAME_LABEL:
             metric = label.value
-        elif label.name != RESOURCE_LABEL:
+        elif label.name != "resource_id":
             labels[label.name] = label.value
 
     if not metric:

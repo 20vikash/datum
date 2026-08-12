@@ -10,6 +10,9 @@ from datum.api.internals.schemas import IngestResponse, Sample, SamplesRequest
 
 router = APIRouter(tags=["ingest"])
 
+TABLE = "samples"
+COLUMNS = ("ts", "metric", "resource_id", "labels", "value")
+
 
 @router.post("/ingest")
 def ingest(
@@ -19,7 +22,8 @@ def ingest(
     _: Annotated[None, rate_limit(12, 60)],  # 1 request every 5 seconds
 ) -> IngestResponse:
     """Stamp every row with the token's resource_id, then write the batch."""
-    return IngestResponse(accepted=provider.ingest(get_rows(body.samples, resource_id)))
+    rows = get_rows(body.samples, resource_id)
+    return IngestResponse(accepted=provider.insert(TABLE, rows, COLUMNS))
 
 
 @router.post("/ingest/remote", status_code=status.HTTP_204_NO_CONTENT)
@@ -41,7 +45,7 @@ def remote(
             status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
             detail="Remote write v2 is not read here; send v1.",
         )
-    provider.ingest(decode(body, resource_id))
+    provider.insert(TABLE, decode(body, resource_id), COLUMNS)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 

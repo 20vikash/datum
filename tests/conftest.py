@@ -85,13 +85,24 @@ class FakeProvider(MetricProvider):
     def __init__(self, **options):
         self.options = options
         self.written: list[dict] = []
-        self.prepared = False
+        self.resources: list[tuple[str, str]] = []
+        self.inserted: list[tuple] = []
+        self.pinged = False
+        self.closed = False
 
-    def ensure_schema(self):
-        self.prepared = True
+    def ping(self):
+        self.pinged = True
+        return True
 
-    def ingest(self, rows):
-        self.written.extend(rows)
+    def close(self):
+        self.closed = True
+
+    def insert(self, table, rows, columns):
+        self.inserted.append((table, rows, columns))
+        if table == "resources":
+            self.resources.extend((row["resource_id"], row["status"]) for row in rows)
+        else:
+            self.written.extend(rows)
         return len(rows)
 
 

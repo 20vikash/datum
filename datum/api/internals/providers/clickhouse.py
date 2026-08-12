@@ -4,24 +4,22 @@ import clickhouse_connect
 from clickhouse_connect.driver.exceptions import ClickHouseError, OperationalError
 
 from datum.api.internals.providers.base import MetricProvider, ProviderError, QueryRefused
-from datum.config.clickhouse import COLUMNS, DATABASE, TABLE, get_schema
+from datum.config.api import DATABASE
 
 
 class ClickHouseProvider(MetricProvider):
-    """Writes samples. Nothing here reads them back — Insights does that directly."""
+    """Writes rows into whichever table the caller names. Nothing here reads them back."""
 
     def __init__(
         self,
         host: str,
+        database: str = DATABASE,
         port: int = 8123,
         username: str = "default",
         password: str = "",
-        database: str = DATABASE,
-        table: str = TABLE,
         timeout: float = 30.0,
     ):
         self.database = database
-        self.table = table
         self.timeout = timeout
         self._connection = {
             "host": host,
@@ -40,23 +38,27 @@ class ClickHouseProvider(MetricProvider):
             )
         return self._client
 
-    @property
-    def qualified(self) -> str:
-        return f"{self.database}.{self.table}"
+    def ping(self) -> bool:
+        """Answers False rather than raising: connecting is itself what may fail."""
+        try:
+            return self.client.ping()
+        except ClickHouseError:
+            return False
 
-    def ensure_schema(self) -> None:
-        for statement in get_schema(self.database, self.table):
-            self._run(self.client.command, statement)
+    def close(self) -> None:
+        if self._client is not None:
+            self._client.close()
+            self._client = None
 
-    def ingest(self, rows: list[dict]) -> int:
+    def insert(self, table: str, rows: list[dict], columns: tuple[str, ...]) -> int:
         if not rows:
             return 0
-        data = [[row[column] for column in COLUMNS] for row in rows]
+        data = [[row[column] for column in columns] for row in rows]
         self._run(
             self.client.insert,
-            self.table,
+            table,
             data,
-            column_names=list(COLUMNS),
+            column_names=list(columns),
             database=self.database,
         )
         return len(rows)

@@ -22,11 +22,18 @@ def test_the_published_routes(client):
     """Write-only: reads go to ClickHouse directly, so datum publishes none."""
     paths = client.get("/v1/openapi.json").json()["paths"]
 
-    assert sorted(paths) == ["/v1/ingest", "/v1/ingest/remote"]
+    assert sorted(paths) == [
+        "/v1/ingest",
+        "/v1/ingest/remote",
+        "/v1/resource/add",
+        "/v1/resource/{resource_id}",
+        "/v1/resource/{resource_id}/status",
+    ]
 
 
-def test_the_schema_is_ready_before_the_first_request(provider, client):
-    assert provider.prepared
+def test_startup_refuses_a_store_it_cannot_reach(provider, client):
+    """Migrations make the schema; the lifespan only checks ClickHouse answers."""
+    assert provider.pinged
 
 
 def test_malformed_body_is_a_422(client):
