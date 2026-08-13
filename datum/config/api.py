@@ -24,6 +24,13 @@ class Settings:
     timeout: float = TIMEOUT
 
     @classmethod
+    def check_identifier(cls, name: str, what: str) -> str:
+        """Checked here, so no construction path puts an unquotable name into SQL."""
+        if not IDENTIFIER.match(name):
+            raise ValueError(f"{what} must match {IDENTIFIER.pattern}, not {name!r}")
+        return name
+
+    @classmethod
     def from_env(cls) -> Settings:
         host = os.environ.get("DATUM_CLICKHOUSE_HOST")
         if not host:
