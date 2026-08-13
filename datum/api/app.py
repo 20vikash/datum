@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from datum.api import errors
-from datum.api.internals import ClickHouseProvider, MetricProvider, TokenVerifier
+from datum.api.internals import ClickHouseProvider, DatumProvider, TokenVerifier
 from datum.api.limiter import RateLimiter
 from datum.api.routes import router
 from datum.config import Settings
@@ -19,7 +19,7 @@ TAGS = [
 ]
 
 
-def get_provider(settings: Settings) -> MetricProvider:
+def get_provider(settings: Settings) -> DatumProvider:
     return ClickHouseProvider(
         host=settings.host,
         port=settings.port,
@@ -33,7 +33,7 @@ def get_provider(settings: Settings) -> MetricProvider:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.provider = app.state.provider or get_provider(app.state.settings)
-    assert isinstance(app.state.provider, MetricProvider)
+    assert isinstance(app.state.provider, DatumProvider)
 
     if not app.state.provider.ping():
         raise RuntimeError("ClickHouse is not reachable; ensure migrations have run.")
@@ -45,7 +45,7 @@ async def lifespan(app: FastAPI):
 def create_app(
     settings: Settings | None = None,
     tokens: TokenVerifier | None = None,
-    provider: MetricProvider | None = None,
+    provider: DatumProvider | None = None,
 ) -> FastAPI:
     """Build the `datum-api` application.
 

@@ -3,11 +3,11 @@ from __future__ import annotations
 import clickhouse_connect
 from clickhouse_connect.driver.exceptions import ClickHouseError, OperationalError
 
-from datum.api.internals.providers.base import MetricProvider, ProviderError, QueryRefused
+from datum.api.internals.providers.base import DatumProvider, ProviderError, QueryRefused
 from datum.config.api import DATABASE
 
 
-class ClickHouseProvider(MetricProvider):
+class ClickHouseProvider(DatumProvider):
     """Writes rows into whichever table the caller names. Nothing here reads them back."""
 
     def __init__(

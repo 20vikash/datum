@@ -1,14 +1,14 @@
 from datum.api.internals.auth import Identity, TokenVerifier
 from datum.api.internals.providers import (
     ClickHouseProvider,
-    MetricProvider,
+    DatumProvider,
     ProviderError,
     QueryRefused,
 )
 
 __all__ = [
     "ClickHouseProvider",
-    "MetricProvider",
+    "DatumProvider",
     "Identity",
     "ProviderError",
     "QueryRefused",
