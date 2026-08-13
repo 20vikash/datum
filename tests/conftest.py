@@ -85,6 +85,7 @@ class FakeProvider(MetricProvider):
     def __init__(self, **options):
         self.options = options
         self.written: list[dict] = []
+        self.resources: list[tuple[str, str]] = []
         self.inserted: list[tuple] = []
         self.pinged = False
         self.closed = False
@@ -98,7 +99,10 @@ class FakeProvider(MetricProvider):
 
     def insert(self, table, rows, columns):
         self.inserted.append((table, rows, columns))
-        self.written.extend(rows)
+        if table == "resources":
+            self.resources.extend((row["resource_id"], row["status"]) for row in rows)
+        else:
+            self.written.extend(rows)
         return len(rows)
 
 

@@ -26,6 +26,9 @@ def test_the_published_routes(client):
         "/v1/ingest",
         "/v1/ingest/remote",
         "/v1/logs/ingest",
+        "/v1/resource/add",
+        "/v1/resource/{resource_id}",
+        "/v1/resource/{resource_id}/status",
     ]
 
 

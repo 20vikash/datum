@@ -9,7 +9,7 @@ from datum.api.internals.providers import (
     ProviderError,
     QueryRefused,
 )
-from datum.api.routes.v1 import ingest
+from datum.api.routes.v1 import ingest, resource
 
 
 class FakeClient:
@@ -89,8 +89,20 @@ def test_the_caller_names_the_table_not_the_provider():
     provider = build(client)
 
     provider.insert(ingest.TABLE, [ROW], ingest.COLUMNS)
+    resource.write(provider, "vm-1", "Active")
 
-    assert [insert[0] for insert in client.inserts] == ["samples"]
+    assert [insert[0] for insert in client.inserts] == ["samples", "resources"]
+
+
+def test_a_resource_row_carries_only_its_two_columns():
+    """`updated_at` defaults to now(): it is the ReplacingMergeTree version."""
+    client = FakeClient()
+
+    resource.write(build(client), "vm-1", "Terminated")
+
+    _, data, columns, _ = client.inserts[0]
+    assert columns == ["resource_id", "status"]
+    assert data == [["vm-1", "Terminated"]]
 
 
 def test_an_empty_batch_touches_the_store_not_at_all():
@@ -111,7 +123,7 @@ def test_a_refused_write_is_the_callers_fault():
     client = FakeClient(error=DatabaseError("Unknown element 'Nonsense' for enum"))
 
     with pytest.raises(QueryRefused, match="refused"):
-        build(client).insert(ingest.TABLE, [ROW], ingest.COLUMNS)
+        resource.write(build(client), "vm-1", "Nonsense")
 
 
 def test_ping_answers_true_when_the_store_is_up():
