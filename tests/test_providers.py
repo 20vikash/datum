@@ -9,26 +9,30 @@ from datum.api.internals.providers import (
     ProviderError,
     QueryRefused,
 )
-from datum.config.clickhouse import get_schema
+from datum.api.routes.v1 import ingest
 
 
 class FakeClient:
     """The driver calls the provider makes, and what it was asked."""
 
-    def __init__(self, error=None):
+    def __init__(self, error=None, reachable=True):
         self.error = error
-        self.commands: list[str] = []
+        self.reachable = reachable
         self.inserts: list[tuple] = []
-
-    def command(self, statement):
-        if self.error:
-            raise self.error
-        self.commands.append(statement)
+        self.closed = False
 
     def insert(self, table, data, column_names, database):
         if self.error:
             raise self.error
         self.inserts.append((table, data, column_names, database))
+
+    def ping(self):
+        if self.error:
+            raise self.error
+        return self.reachable
+
+    def close(self):
+        self.closed = True
 
 
 def build(client=None, **options) -> ClickHouseProvider:
@@ -37,9 +41,18 @@ def build(client=None, **options) -> ClickHouseProvider:
     return provider
 
 
+ROW = {
+    "ts": datetime(2026, 8, 5, tzinfo=UTC),
+    "metric": "cpu",
+    "resource_id": "acme",
+    "labels": {"region": "ap_south_1"},
+    "value": 12.5,
+}
+
+
 def test_a_provider_missing_a_method_cannot_be_built():
     class Half(MetricProvider):
-        def ingest(self, rows):
+        def insert(self, table, rows, columns):
             return 0
 
     with pytest.raises(TypeError, match="abstract"):
@@ -56,69 +69,66 @@ def test_a_provider_exposes_no_way_to_read():
         assert not hasattr(MetricProvider, absent)
 
 
-def test_an_unreachable_store_is_not_a_refusal():
-    client = FakeClient(error=OperationalError("connection refused"))
-
-    with pytest.raises(ProviderError, match="unreachable"):
-        build(client).ingest([{column: None for column in ROW}])
+def test_the_provider_issues_no_ddl():
+    """Migrations create the schema; datum-api never does."""
+    assert not hasattr(MetricProvider, "ensure_schema")
 
 
-def test_a_refused_write_is_the_callers_fault():
-    client = FakeClient(error=DatabaseError("unknown column"))
-
-    with pytest.raises(QueryRefused, match="refused"):
-        build(client).ingest([{column: None for column in ROW}])
-
-
-ROW = {
-    "ts": datetime(2026, 8, 5, tzinfo=UTC),
-    "metric": "cpu",
-    "resource_id": "acme",
-    "labels": {"region": "ap_south_1"},
-    "value": 12.5,
-}
-
-
-def test_a_batch_is_written_in_column_order():
+def test_a_batch_is_written_in_the_column_order_it_was_given():
     client = FakeClient()
 
-    assert build(client).ingest([ROW]) == 1
+    assert build(client).insert(ingest.TABLE, [ROW], ingest.COLUMNS) == 1
     table, data, columns, database = client.inserts[0]
     assert (table, database) == ("samples", "datum")
     assert columns == ["ts", "metric", "resource_id", "labels", "value"]
     assert data == [[ROW["ts"], "cpu", "acme", {"region": "ap_south_1"}, 12.5]]
 
 
+def test_the_caller_names_the_table_not_the_provider():
+    client = FakeClient()
+    provider = build(client)
+
+    provider.insert(ingest.TABLE, [ROW], ingest.COLUMNS)
+
+    assert [insert[0] for insert in client.inserts] == ["samples"]
+
+
 def test_an_empty_batch_touches_the_store_not_at_all():
     client = FakeClient()
 
-    assert build(client).ingest([]) == 0
+    assert build(client).insert(ingest.TABLE, [], ingest.COLUMNS) == 0
     assert client.inserts == []
 
 
-def test_the_schema_is_created_where_it_is_configured():
+def test_an_unreachable_store_is_not_a_refusal():
+    client = FakeClient(error=OperationalError("connection refused"))
+
+    with pytest.raises(ProviderError, match="unreachable"):
+        build(client).insert(ingest.TABLE, [ROW], ingest.COLUMNS)
+
+
+def test_a_refused_write_is_the_callers_fault():
+    client = FakeClient(error=DatabaseError("Unknown element 'Nonsense' for enum"))
+
+    with pytest.raises(QueryRefused, match="refused"):
+        build(client).insert(ingest.TABLE, [ROW], ingest.COLUMNS)
+
+
+def test_ping_answers_true_when_the_store_is_up():
+    assert build(FakeClient()).ping() is True
+
+
+def test_ping_answers_false_rather_than_raising():
+    """The lifespan asks a question; it does not want an exception."""
+    assert build(FakeClient(error=OperationalError("refused"))).ping() is False
+    assert build(FakeClient(reachable=False)).ping() is False
+
+
+def test_closing_drops_the_client_so_a_later_call_reconnects():
     client = FakeClient()
+    provider = build(client)
 
-    build(client, database="other", table="readings").ensure_schema()
+    provider.close()
 
-    assert client.commands == list(get_schema("other", "readings"))
-
-
-def test_the_schema_creates_the_database_and_one_table():
-    client = FakeClient()
-
-    build(client).ensure_schema()
-
-    assert len(client.commands) == 2
-    assert client.commands[0].startswith("CREATE DATABASE IF NOT EXISTS datum")
-    assert "CREATE TABLE IF NOT EXISTS datum.samples" in client.commands[1]
-
-
-def test_startup_asks_clickhouse_for_nothing_but_the_schema():
-    """No SHOW GRANTS and no row policy: what a credential may reach is granted
-    at provisioning time, not audited here."""
-    client = FakeClient()
-
-    build(client).ensure_schema()
-
-    assert not any("GRANT" in command or "POLICY" in command for command in client.commands)
+    assert client.closed is True
+    assert provider._client is None

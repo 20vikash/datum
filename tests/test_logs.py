@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 
 from datum import create_app
 from datum.config import MAX_LOG_ATTRIBUTES, MAX_LOG_BATCH, MAX_LOG_MESSAGE
-from tests.conftest import SETTINGS, FakeLogProvider, FakeProvider, mint
+from tests.conftest import SETTINGS, FakeProvider, mint
 
 LINE = {
     "ts": "2026-08-05T10:00:00Z",
@@ -21,18 +21,18 @@ def post(client, *lines):
     return client.post("/v1/logs/ingest", json={"lines": list(lines)})
 
 
-def test_a_batch_is_accepted(client, log_provider):
+def test_a_batch_is_accepted(client, provider):
     response = post(client, LINE)
 
     assert response.status_code == 200
     assert response.json() == {"accepted": 1}
-    assert len(log_provider.written) == 1
+    assert len(provider.written) == 1
 
 
-def test_the_token_decides_the_resource_id(client, log_provider):
+def test_the_token_decides_the_resource_id(client, provider):
     post(client, {**LINE, "attributes": {"queue": "default"}})
 
-    written = log_provider.written[0]
+    written = provider.written[0]
     assert written["resource_id"] == "acme"
     assert written["product"] == "pilot"
     assert written["service"] == "worker"
@@ -42,20 +42,18 @@ def test_the_token_decides_the_resource_id(client, log_provider):
     assert written["attributes"] == {"queue": "default"}
 
 
-def test_a_claimed_resource_id_in_the_attributes_is_dropped(client, log_provider):
+def test_a_claimed_resource_id_in_the_attributes_is_dropped(client, provider):
     """The token is the only thing that can say who a row belongs to."""
     post(client, {**LINE, "attributes": {"resource_id": "someone_else"}})
 
-    written = log_provider.written[0]
+    written = provider.written[0]
     assert written["resource_id"] == "acme"
     assert "resource_id" not in written["attributes"]
 
 
 def as_client(tokens, claims):
     """A client carrying one specific set of claims."""
-    app = create_app(
-        SETTINGS, tokens=tokens, provider=FakeProvider(), log_provider=FakeLogProvider()
-    )
+    app = create_app(SETTINGS, tokens=tokens, provider=FakeProvider())
     headers = {"Authorization": f"Bearer {mint(claims)}"}
     return TestClient(app, headers=headers)
 

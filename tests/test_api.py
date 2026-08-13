@@ -29,15 +29,9 @@ def test_the_published_routes(client):
     ]
 
 
-def test_the_schema_is_ready_before_the_first_request(provider, client):
-    assert provider.prepared
-
-
-def test_the_log_schema_is_ready_before_the_first_request(
-    log_provider,
-    client,
-):
-    assert log_provider.prepared
+def test_startup_refuses_a_store_it_cannot_reach(provider, client):
+    """Migrations make the schema; the lifespan only checks ClickHouse answers."""
+    assert provider.pinged
 
 
 def test_malformed_body_is_a_422(client):

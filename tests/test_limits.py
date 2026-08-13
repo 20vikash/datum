@@ -9,7 +9,7 @@ from datum.api.internals.remote import (
     decode,
 )
 from datum.api.internals.remote.remote_write_pb2 import WriteRequest
-from datum.config import MAX_BATCH, MAX_DECOMPRESSED, MAX_LABELS, Settings
+from datum.config import MAX_BATCH, MAX_DECOMPRESSED, MAX_LABELS
 
 RESOURCE = "acme"
 
@@ -101,14 +101,3 @@ def test_a_wide_series_is_a_413(client, provider):
 
     assert client.post("/v1/ingest/remote", content=body).status_code == 413
     assert provider.written == []
-
-
-def test_a_table_name_that_would_need_quoting_is_refused_at_startup():
-    """An unquotable name cannot be interpolated into the schema DDL."""
-    with pytest.raises(ValueError, match="DATUM_CLICKHOUSE_TABLE"):
-        Settings(host="localhost", table="samples; DROP")
-
-
-def test_a_database_name_is_held_to_the_same_rule():
-    with pytest.raises(ValueError, match="DATUM_CLICKHOUSE_DATABASE"):
-        Settings(host="localhost", database="datum-1")

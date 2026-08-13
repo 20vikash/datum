@@ -5,7 +5,6 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field, field_validator
 
-from datum.config.clickhouse import RESOURCE_LABEL
 from datum.config.limits import (
     MAX_BATCH,
     MAX_LABELS,
@@ -41,16 +40,11 @@ class Sample(BaseModel):
 
     def get_row(self, resource_id: str) -> dict:
         """One table row. The token owns `resource_id`, so a claimed one is dropped."""
-        labels = {
-            name: value
-            for name, value in self.labels.items()
-            if name != RESOURCE_LABEL
-        }
-
+        labels = {name: value for name, value in self.labels.items() if name != "resource_id"}
         return {
             "ts": self.ts,
             "metric": self.metric,
-            RESOURCE_LABEL: resource_id,
+            "resource_id": resource_id,
             "labels": labels,
             "value": self.value,
         }
@@ -83,20 +77,12 @@ class LogLine(BaseModel):
 
     @field_validator("attributes")
     @classmethod
-    def _attribute_names(
-        cls,
-        attributes: dict[str, str],
-    ) -> dict[str, str]:
-        unusable = sorted(
-            name for name in attributes
-            if not NAME.match(name)
-        )
-
+    def _attribute_names(cls, attributes: dict[str, str]) -> dict[str, str]:
+        unusable = sorted(name for name in attributes if not NAME.match(name))
         if unusable:
             raise ValueError(
                 f"attribute names must match {NAME.pattern}: {', '.join(unusable)}"
             )
-
         return attributes
 
     def get_row(self, resource_id: str) -> dict:
@@ -104,12 +90,11 @@ class LogLine(BaseModel):
         attributes = {
             name: value
             for name, value in self.attributes.items()
-            if name != RESOURCE_LABEL
+            if name != "resource_id"
         }
-
         return {
             "ts": self.ts,
-            RESOURCE_LABEL: resource_id,
+            "resource_id": resource_id,
             "product": self.product,
             "service": self.service,
             "level": self.level,

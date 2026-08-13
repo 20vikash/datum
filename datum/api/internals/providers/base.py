@@ -19,26 +19,14 @@ class MetricProvider(ABC):
     """
 
     @abstractmethod
-    def ensure_schema(self) -> None:
-        """Make the store ready to accept samples. Idempotent."""
+    def insert(self, table: str, rows: list[dict], columns: tuple[str, ...]) -> int:
+        """Write one batch into `table`. Rows are keyed by column name; `columns` is
+        the order they land in. Returns rows accepted."""
 
     @abstractmethod
-    def ingest(self, rows: list[dict]) -> int:
-        """Write one batch, keyed by column name. Returns rows accepted."""
-
-
-class LogProvider(ABC):
-    """What the service needs from a logs store, and nothing more.
-
-    A parallel of `MetricProvider` for the logs table. One that forgets a
-    method fails at construction. Datum writes only: reads go to ClickHouse
-    directly.
-    """
+    def ping(self) -> bool:
+        """Is the store reachable?"""
 
     @abstractmethod
-    def ensure_schema(self) -> None:
-        """Make the store ready to accept log lines. Idempotent."""
-
-    @abstractmethod
-    def ingest(self, rows: list[dict]) -> int:
-        """Write one batch of log lines, keyed by column name. Returns rows accepted."""
+    def close(self) -> None:
+        """Close the connection to the store."""

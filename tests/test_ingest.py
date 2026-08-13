@@ -3,7 +3,7 @@ from fastapi.testclient import TestClient
 
 from datum import create_app
 from datum.config import MAX_LABELS
-from tests.conftest import SETTINGS, FakeLogProvider, FakeProvider, mint
+from tests.conftest import SETTINGS, FakeProvider, mint
 
 SAMPLE = {"metric": "system_cpu_percent", "value": 12.5, "ts": "2026-08-05T10:00:00Z"}
 
@@ -41,9 +41,7 @@ def test_a_claimed_resource_id_in_the_body_is_dropped(client, provider):
 
 def as_client(tokens, claims):
     """A client carrying one specific set of claims."""
-    app = create_app(
-        SETTINGS, tokens=tokens, provider=FakeProvider(), log_provider=FakeLogProvider()
-    )
+    app = create_app(SETTINGS, tokens=tokens, provider=FakeProvider())
     headers = {"Authorization": f"Bearer {mint(claims)}"}
     return TestClient(app, headers=headers)
 

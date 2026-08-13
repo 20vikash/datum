@@ -4,7 +4,7 @@ from fastapi.testclient import TestClient
 
 from datum import Settings, create_app
 from datum.api.internals import Identity, TokenVerifier
-from datum.api.internals.providers import LogProvider, MetricProvider
+from datum.api.internals.providers import MetricProvider
 
 SETTINGS = Settings(host="localhost")
 
@@ -85,28 +85,19 @@ class FakeProvider(MetricProvider):
     def __init__(self, **options):
         self.options = options
         self.written: list[dict] = []
-        self.prepared = False
+        self.inserted: list[tuple] = []
+        self.pinged = False
+        self.closed = False
 
-    def ensure_schema(self):
-        self.prepared = True
+    def ping(self):
+        self.pinged = True
+        return True
 
-    def ingest(self, rows):
-        self.written.extend(rows)
-        return len(rows)
+    def close(self):
+        self.closed = True
 
-
-class FakeLogProvider(LogProvider):
-    """Stands in for the logs table, so route tests open no socket."""
-
-    def __init__(self, **options):
-        self.options = options
-        self.written: list[dict] = []
-        self.prepared = False
-
-    def ensure_schema(self):
-        self.prepared = True
-
-    def ingest(self, rows):
+    def insert(self, table, rows, columns):
+        self.inserted.append((table, rows, columns))
         self.written.extend(rows)
         return len(rows)
 
@@ -122,16 +113,9 @@ def provider():
 
 
 @pytest.fixture
-def log_provider():
-    return FakeLogProvider()
-
-
-@pytest.fixture
-def client(tokens, provider, log_provider):
+def client(tokens, provider):
     """Authenticated, the way a caller talks to the service."""
-    app = create_app(
-        SETTINGS, tokens=tokens, provider=provider, log_provider=log_provider
-    )
+    app = create_app(SETTINGS, tokens=tokens, provider=provider)
     with TestClient(app, headers={"Authorization": f"Bearer {TOKEN}"}) as test_client:
         yield test_client
 
@@ -151,7 +135,6 @@ def anonymous():
         SETTINGS,
         tokens=TokenVerifier(),
         provider=FakeProvider(),
-        log_provider=FakeLogProvider(),
     )
     with TestClient(app) as test_client:
         yield test_client

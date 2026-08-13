@@ -2,16 +2,10 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 
 from datum.api import errors
-from datum.api.internals import (
-    ClickHouseLogProvider,
-    ClickHouseProvider,
-    LogProvider,
-    MetricProvider,
-    TokenVerifier,
-)
+from datum.api.internals import ClickHouseProvider, MetricProvider, TokenVerifier
 from datum.api.limiter import RateLimiter
 from datum.api.routes import router
 from datum.config import Settings
@@ -20,14 +14,8 @@ TITLE = "datum"
 VERSION = "0.1.0"
 
 TAGS = [
-    {
-        "name": "ingest",
-        "description": "Write samples. The token decides who they belong to.",
-    },
-    {
-        "name": "logs",
-        "description": "Write log lines. The token decides who they belong to.",
-    },
+    {"name": "ingest", "description": "Write samples. The token decides who they belong to."},
+    {"name": "logs", "description": "Write log lines. The token decides who they belong to."},
 ]
 
 
@@ -38,19 +26,6 @@ def get_provider(settings: Settings) -> MetricProvider:
         username=settings.username,
         password=settings.password,
         database=settings.database,
-        table=settings.table,
-        timeout=settings.timeout,
-    )
-
-
-def get_log_provider(settings: Settings) -> LogProvider:
-    return ClickHouseLogProvider(
-        host=settings.host,
-        port=settings.port,
-        username=settings.username,
-        password=settings.password,
-        database=settings.database,
-        table=settings.log_table,
         timeout=settings.timeout,
     )
 
@@ -58,29 +33,25 @@ def get_log_provider(settings: Settings) -> LogProvider:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.provider = app.state.provider or get_provider(app.state.settings)
-    app.state.log_provider = (
-        app.state.log_provider or get_log_provider(app.state.settings)
-    )
+    assert isinstance(app.state.provider, MetricProvider)
 
-    app.state.provider.ensure_schema()
-    app.state.log_provider.ensure_schema()
+    if not app.state.provider.ping():
+        raise RuntimeError("ClickHouse is not reachable; ensure migrations have run.")
 
     yield
+    app.state.provider.close()
 
 
 def create_app(
     settings: Settings | None = None,
     tokens: TokenVerifier | None = None,
     provider: MetricProvider | None = None,
-    log_provider: LogProvider | None = None,
 ) -> FastAPI:
     """Build the `datum-api` application.
 
     `tokens` defaults to the public key in `DATUM_JWT_PUBLIC_KEY`. With none
-    set, every /v1 call is a 401. `provider` and `log_provider` default to the
-    ClickHouse providers; either may be replaced for tests.
+    set, every /v1 call is a 401.
     """
-
     app = FastAPI(
         title=TITLE,
         version=VERSION,
@@ -90,27 +61,10 @@ def create_app(
         redoc_url=None,
         lifespan=lifespan,
     )
-
-    @app.middleware("http")
-    async def dump_body(request: Request, call_next):
-        body = await request.body()
-
-        async def receive():
-            return {
-                "type": "http.request",
-                "body": body,
-                "more_body": False,
-            }
-
-        request._receive = receive
-        return await call_next(request)
-
     app.state.settings = settings or Settings.from_env()
     app.state.tokens = tokens or TokenVerifier.from_env()
     app.state.provider = provider
     app.state.limiter = RateLimiter()
-    app.state.log_provider = log_provider
-
     errors.install(app)
     app.include_router(router)
 
