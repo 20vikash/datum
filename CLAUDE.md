@@ -62,6 +62,8 @@ ClickHouse stores them. Readers get them back from ClickHouse directly — datum
     - `002_ingestion_stats.sql` — `daily_ingestion_stats` plus the materialized view that
       fills it from inserts into `samples`
     - `003_logs.sql` — `logs`, the log lines table
+    - `004_log_stats.sql` — `daily_log_stats`, the log twin of
+      `daily_ingestion_stats`, filled by a view on `logs`
     - `migrations.py` — `datum-migrate`; substitutes the passwords, splits and runs
   - `api/app.py` — `create_app(settings, tokens, provider)`; builds the provider once at
     startup and pings it, so a missing schema fails loudly there

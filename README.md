@@ -147,6 +147,37 @@ GROUP BY date, resource_id ORDER BY 3 DESC;
 The view only sees inserts made after it exists. It does not backfill from rows
 already in `samples`.
 
+**`datum.daily_log_stats`** is the log twin of the table above: how many lines
+each machine sent per product, service and level, per day. `datum` never writes
+to it — `datum.mv_daily_log_stats` is a materialized view that watches inserts
+into `logs` and fills it in:
+
+```sql
+CREATE TABLE datum.daily_log_stats
+(
+    date         Date,
+    resource_id  String,
+    product      LowCardinality(String),
+    service      LowCardinality(String),
+    level        LowCardinality(String),
+    log_count    UInt64
+)
+ENGINE = SummingMergeTree()
+ORDER BY (date, resource_id, product, service, level);
+
+CREATE MATERIALIZED VIEW datum.mv_daily_log_stats
+TO datum.daily_log_stats AS
+SELECT toDate(ts) AS date, resource_id, product, service, level, count() AS log_count
+FROM datum.logs
+GROUP BY date, resource_id, product, service, level;
+```
+
+It exists to spot a machine whose log volume shifts — an `error` spike reads at
+a glance, where `daily_ingestion_stats` can only hear the overall count. The
+same rules apply as its metric twin: read with `sum(log_count)` and a `GROUP BY`
+rather than one row per day, and it only counts lines inserted after the view
+existed.
+
 There is no TTL. Nothing expires on its own.
 
 ## Setting it up
@@ -195,6 +226,7 @@ They live in `datum/migrations/` as plain `.sql` files, run in filename order:
 | `001_init_schema.sql` | creates the database, `samples` and `resources` |
 | `002_ingestion_stats.sql` | `daily_ingestion_stats` and the view that fills it |
 | `003_logs.sql` | the `logs` table |
+| `004_log_stats.sql` | `daily_log_stats` and the view that fills it |
 
 Everything is `IF NOT EXISTS`, so running it twice changes nothing.
 
