@@ -34,9 +34,7 @@ class Settings:
     def from_env(cls) -> Settings:
         host = os.environ.get("DATUM_CLICKHOUSE_HOST")
         if not host:
-            raise RuntimeError(
-                "DATUM_CLICKHOUSE_HOST is not set; point it at ClickHouse."
-            )
+            raise RuntimeError("DATUM_CLICKHOUSE_HOST is not set; point it at ClickHouse.")
 
         return cls(
             host=host,

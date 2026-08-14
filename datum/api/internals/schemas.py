@@ -36,9 +36,7 @@ class Sample(BaseModel):
     def _label_names(cls, labels: dict[str, str]) -> dict[str, str]:
         unusable = sorted(name for name in labels if not NAME.match(name))
         if unusable:
-            raise ValueError(
-                f"label names must match {NAME.pattern}: {', '.join(unusable)}"
-            )
+            raise ValueError(f"label names must match {NAME.pattern}: {', '.join(unusable)}")
         return labels
 
     def get_row(self, resource_id: str) -> dict:
@@ -83,17 +81,13 @@ class LogLine(BaseModel):
     def _attribute_names(cls, attributes: dict[str, str]) -> dict[str, str]:
         unusable = sorted(name for name in attributes if not NAME.match(name))
         if unusable:
-            raise ValueError(
-                f"attribute names must match {NAME.pattern}: {', '.join(unusable)}"
-            )
+            raise ValueError(f"attribute names must match {NAME.pattern}: {', '.join(unusable)}")
         return attributes
 
     def get_row(self, resource_id: str) -> dict:
         """One table row. The token owns `resource_id`, so a claimed key is dropped."""
         attributes = {
-            name: value
-            for name, value in self.attributes.items()
-            if name != "resource_id"
+            name: value for name, value in self.attributes.items() if name != "resource_id"
         }
         return {
             "ts": self.ts,

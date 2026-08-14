@@ -71,10 +71,6 @@ class ClickHouseProvider(DatumProvider):
         try:
             return call(*arguments, **keywords)
         except OperationalError as unreachable:
-            raise ProviderError(
-                f"ClickHouse is unreachable: {unreachable}"
-            ) from unreachable
+            raise ProviderError(f"ClickHouse is unreachable: {unreachable}") from unreachable
         except ClickHouseError as refused:
-            raise QueryRefused(
-                f"ClickHouse refused it: {refused}"
-            ) from refused
+            raise QueryRefused(f"ClickHouse refused it: {refused}") from refused
