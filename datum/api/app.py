@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -65,6 +66,7 @@ def create_app(
     app.state.tokens = tokens or TokenVerifier.from_env()
     app.state.provider = provider
     app.state.limiter = RateLimiter()
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
     errors.install(app)
     app.include_router(router)
 
