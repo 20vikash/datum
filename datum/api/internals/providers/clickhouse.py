@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+
 import clickhouse_connect
 from clickhouse_connect.driver.exceptions import ClickHouseError, OperationalError
 
@@ -27,18 +29,22 @@ class ClickHouseProvider(DatumProvider):
             "username": username,
             "password": password,
         }
-        self._client = None
+        self._local = threading.local()
+        self._clients: list = []
 
     @property
     def client(self):
-        """Connected on first use, so building the provider opens no socket."""
-        if self._client is None:
-            self._client = clickhouse_connect.get_client(
+        """One client per worker thread, so concurrent inserts don't share a session."""
+        client = getattr(self._local, "client", None)
+        if client is None:
+            client = clickhouse_connect.get_client(
                 **self._connection,
                 connect_timeout=self.timeout,
                 send_receive_timeout=self.timeout,
             )
-        return self._client
+            self._local.client = client
+            self._clients.append(client)
+        return client
 
     def ping(self) -> bool:
         """Answers False rather than raising: connecting is itself what may fail."""
@@ -48,9 +54,10 @@ class ClickHouseProvider(DatumProvider):
             return False
 
     def close(self) -> None:
-        if self._client is not None:
-            self._client.close()
-            self._client = None
+        for client in self._clients:
+            client.close()
+        self._clients.clear()
+        self._local = threading.local()
 
     def insert(self, table: str, rows: list[dict], columns: tuple[str, ...]) -> int:
         if not rows:

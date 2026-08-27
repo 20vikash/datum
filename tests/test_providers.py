@@ -37,7 +37,9 @@ class FakeClient:
 
 def build(client=None, **options) -> ClickHouseProvider:
     provider = ClickHouseProvider(host="localhost", **options)
-    provider._client = client if client is not None else FakeClient()
+    fake = client if client is not None else FakeClient()
+    provider._local.client = fake
+    provider._clients.append(fake)
     return provider
 
 
@@ -60,7 +62,7 @@ def test_a_provider_missing_a_method_cannot_be_built():
 
 
 def test_building_a_provider_opens_no_connection():
-    assert ClickHouseProvider(host="localhost")._client is None
+    assert not hasattr(ClickHouseProvider(host="localhost")._local, "client")
 
 
 def test_a_provider_exposes_no_way_to_read():
@@ -143,4 +145,4 @@ def test_closing_drops_the_client_so_a_later_call_reconnects():
     provider.close()
 
     assert client.closed is True
-    assert provider._client is None
+    assert not hasattr(provider._local, "client")

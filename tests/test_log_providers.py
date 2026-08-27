@@ -28,7 +28,9 @@ class FakeClient:
 
 def build(client=None, **options) -> ClickHouseProvider:
     provider = ClickHouseProvider(host="localhost", **options)
-    provider._client = client if client is not None else FakeClient()
+    fake = client if client is not None else FakeClient()
+    provider._local.client = fake
+    provider._clients.append(fake)
     return provider
 
 
