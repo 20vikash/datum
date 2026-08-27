@@ -27,7 +27,7 @@ def ingest(
     request: LogLineRequest,
     provider: Provider,
     resource_id: Writer,
-    _: Annotated[None, rate_limit(12, 60)],
+    _: Annotated[None, rate_limit(120, 60)],
 ) -> IngestResponse:
     """Stamp every line with the token's resource_id, then write the batch."""
     lines = get_rows(request.lines, resource_id)
